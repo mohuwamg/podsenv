@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# Podsenv Prefix Command
+# 显示指定版本的安装路径
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 选项
+VERBOSE=false
+SHOW_ALL=false
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --all)
+        SHOW_ALL=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help prefix
+        ;;
+      -*)
+        podsenv_error "Unknown option: $1"
+        ;;
+      *)
+        # 版本参数
+        VERSION="$1"
+        shift
+        ;;
+    esac
+  done
+}
+
+# 显示版本前缀路径
+show_version_prefix() {
+  local version="$1"
+  local resolved_version
+  local version_dir
+  
+  # 解析版本别名
+  resolved_version="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+  
+  if [ "$resolved_version" = "system" ]; then
+    if podsenv_command_exists "pod"; then
+      # 尝试获取系统 CocoaPods 的路径
+      local system_path
+      system_path="$(command -v pod 2>/dev/null || echo "")"
+      
+      if [ -n "$system_path" ]; then
+        # 获取 gem 的安装路径
+        local gem_path
+        gem_path="$(dirname "$(dirname "$system_path")" 2>/dev/null || echo "")"
+        
+        if [ "$VERBOSE" = "true" ]; then
+          echo "System CocoaPods prefix: $gem_path"
+          echo "Executable path: $system_path"
+          
+          local system_version
+          system_version="$(pod --version 2>/dev/null || echo "unknown")"
+          echo "Version: $system_version"
+        else
+          echo "$gem_path"
+        fi
+      else
+        podsenv_error "System CocoaPods executable not found"
+      fi
+    else
+      podsenv_error "System CocoaPods not installed"
+    fi
+    return
+  fi
+  
+  # 获取版本目录
+  version_dir="$(podsenv_version_dir "$resolved_version")"
+  
+  if [ ! -d "$version_dir" ]; then
+    podsenv_error "CocoaPods $version is not installed"
+  fi
+  
+  if [ "$VERBOSE" = "true" ]; then
+    echo "Version: $version"
+    if [ "$version" != "$resolved_version" ]; then
+      echo "Resolved to: $resolved_version"
+    fi
+    echo "Prefix: $version_dir"
+    
+    # 显示相关路径
+    local gem_home
+    gem_home="$(podsenv_gem_home "$resolved_version")"
+    echo "GEM_HOME: $gem_home"
+    
+    local gem_bin_dir
+    gem_bin_dir="$(podsenv_gem_bin_dir "$resolved_version")"
+    echo "Executables: $gem_bin_dir"
+    
+    # 检查 CocoaPods 可执行文件
+    local pod_executable="${gem_bin_dir}/pod"
+    if [ -f "$pod_executable" ]; then
+      echo "CocoaPods executable: $pod_executable"
+      
+      # 显示文件信息
+      if [ -x "$pod_executable" ]; then
+        echo "Status: executable"
+      else
+        echo "Status: not executable"
+      fi
+      
+      # 显示文件大小
+      local file_size
+      file_size="$(stat -f%z "$pod_executable" 2>/dev/null || echo "unknown")"
+      echo "Size: ${file_size} bytes"
+    else
+      echo "CocoaPods executable: not found"
+    fi
+    
+    # 显示已安装的 gems
+    if [ -d "$gem_home/gems" ]; then
+      local gem_count
+      gem_count="$(find "$gem_home/gems" -maxdepth 1 -type d | wc -l | xargs)"
+      gem_count=$((gem_count - 1))  # 减去 gems 目录本身
+      echo "Installed gems: $gem_count"
+      
+      # 显示 CocoaPods 相关的 gems
+      local cocoapods_gems
+      cocoapods_gems="$(find "$gem_home/gems" -maxdepth 1 -name "cocoapods*" -type d 2>/dev/null | wc -l | xargs || echo "0")"
+      echo "CocoaPods gems: $cocoapods_gems"
+    fi
+  else
+    echo "$version_dir"
+  fi
+}
+
+# 显示所有已安装版本的前缀
+show_all_prefixes() {
+  local installed_versions
+  installed_versions="$(podsenv_installed_versions)"
+  
+  if [ -z "$installed_versions" ]; then
+    echo "No CocoaPods versions installed"
+    return
+  fi
+  
+  echo "Installed CocoaPods versions and their prefixes:"
+  echo
+  
+  while IFS= read -r version; do
+    if [ -n "$version" ]; then
+      local version_dir
+      version_dir="$(podsenv_version_dir "$version")"
+      
+      if [ "$VERBOSE" = "true" ]; then
+        echo "$version:"
+        echo "  Prefix: $version_dir"
+        
+        local gem_home
+        gem_home="$(podsenv_gem_home "$version")"
+        echo "  GEM_HOME: $gem_home"
+        
+        local gem_bin_dir
+        gem_bin_dir="$(podsenv_gem_bin_dir "$version")"
+        echo "  Executables: $gem_bin_dir"
+        
+        # 检查状态
+        local pod_executable="${gem_bin_dir}/pod"
+        if [ -f "$pod_executable" ] && [ -x "$pod_executable" ]; then
+          echo "  Status: ready"
+        else
+          echo "  Status: incomplete installation"
+        fi
+        echo
+      else
+        printf "%-15s %s\n" "$version" "$version_dir"
+      fi
+    fi
+  done <<< "$installed_versions"
+  
+  # 显示系统版本
+  if podsenv_command_exists "pod"; then
+    local system_path
+    system_path="$(command -v pod 2>/dev/null || echo "")"
+    
+    if [ -n "$system_path" ]; then
+      local gem_path
+      gem_path="$(dirname "$(dirname "$system_path")" 2>/dev/null || echo "")"
+      
+      if [ "$VERBOSE" = "true" ]; then
+        echo "system:"
+        echo "  Prefix: $gem_path"
+        echo "  Executable: $system_path"
+        
+        local system_version
+        system_version="$(pod --version 2>/dev/null || echo "unknown")"
+        echo "  Version: $system_version"
+        echo "  Status: system installation"
+      else
+        printf "%-15s %s\n" "system" "$gem_path"
+      fi
+    fi
+  fi
+}
+
+# 验证版本格式
+validate_version() {
+  local version="$1"
+  
+  if [ -z "$version" ]; then
+    return 1
+  fi
+  
+  # 允许的版本格式
+  case "$version" in
+    "system"|"latest"|"stable"|"lts")
+      return 0
+      ;;
+    *.*.*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# 显示帮助信息
+show_help() {
+  cat << 'EOF'
+Usage: podsenv prefix [<version>] [options]
+
+显示指定 CocoaPods 版本的安装路径前缀。
+
+Arguments:
+  <version>     要查询的版本号 (可选)
+                如果未指定，显示当前活跃版本的前缀
+                支持版本别名: latest, stable, lts, system
+
+Options:
+  --all         显示所有已安装版本的前缀
+  -v, --verbose 显示详细信息
+  -h, --help    显示此帮助信息
+
+Examples:
+  podsenv prefix              # 显示当前版本的前缀
+  podsenv prefix 1.12.1       # 显示指定版本的前缀
+  podsenv prefix latest       # 显示最新版本的前缀
+  podsenv prefix system       # 显示系统版本的前缀
+  podsenv prefix --all        # 显示所有版本的前缀
+  podsenv prefix --verbose    # 显示详细信息
+EOF
+}
+
+# 主函数
+main() {
+  local VERSION=""
+  
+  # 解析参数
+  parse_args "$@"
+  
+  # 显示所有版本
+  if [ "$SHOW_ALL" = "true" ]; then
+    show_all_prefixes
+    return
+  fi
+  
+  # 如果没有指定版本，使用当前版本
+  if [ -z "$VERSION" ]; then
+    VERSION="$(podsenv_detect_version 2>/dev/null || echo "")"
+    
+    if [ -z "$VERSION" ]; then
+      podsenv_error "No CocoaPods version is currently set. Use 'podsenv global <version>' to set one."
+    fi
+  fi
+  
+  # 验证版本格式
+  if ! validate_version "$VERSION"; then
+    podsenv_error "Invalid version format: $VERSION"
+  fi
+  
+  # 显示版本前缀
+  show_version_prefix "$VERSION"
+}
+
+# 执行主函数
+main "$@"

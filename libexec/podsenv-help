@@ -1,0 +1,653 @@
+#!/usr/bin/env bash
+# Podsenv Help Command
+# 显示帮助信息和使用指南
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+
+# 显示主帮助信息
+show_main_help() {
+  cat << 'EOF'
+Podsenv - CocoaPods Version Manager
+==================================
+
+Podsenv 是一个 CocoaPods 版本管理工具，让您可以轻松安装、切换和管理多个 CocoaPods 版本。
+
+用法: podsenv <command> [<args>]
+
+常用命令:
+  install <version>     安装指定版本的 CocoaPods
+  uninstall <version>   卸载指定版本的 CocoaPods
+  versions              列出所有已安装的版本
+  global [<version>]    设置或显示全局默认版本
+  local [<version>]     设置或显示当前目录的版本
+  shell <version>       设置当前 shell 会话的版本
+  
+实用命令:
+  which <command>       显示命令的完整路径
+  exec <command>        在指定版本环境中执行命令
+  version               显示当前活跃的版本
+  prefix [<version>]    显示版本的安装路径
+  
+管理命令:
+  rehash                重建 shim 脚本
+  init                  显示 shell 初始化代码
+  doctor                诊断安装和配置问题
+  plugin                管理 podsenv 插件
+  
+其他命令:
+  help [<command>]      显示帮助信息
+  --version             显示 podsenv 版本
+
+版本格式:
+  x.y.z                 具体版本号 (如 1.12.1)
+  latest                最新稳定版本
+  stable                最新稳定版本 (同 latest)
+  lts                   长期支持版本
+  system                使用系统安装的 CocoaPods
+
+示例:
+  podsenv install 1.12.1          # 安装 CocoaPods 1.12.1
+  podsenv install latest          # 安装最新版本
+  podsenv global 1.12.1           # 设置全局默认版本
+  podsenv local 1.11.3            # 为当前项目设置版本
+  podsenv shell system            # 在当前会话使用系统版本
+  podsenv versions --remote       # 查看可安装的远程版本
+  
+更多信息:
+  podsenv help <command>          # 查看特定命令的详细帮助
+  podsenv doctor                  # 诊断配置问题
+  
+项目主页: https://github.com/your-username/podsenv
+EOF
+}
+
+# 显示 install 命令帮助
+show_install_help() {
+  cat << 'EOF'
+podsenv install - 安装 CocoaPods 版本
+
+用法: podsenv install <version> [options]
+
+参数:
+  <version>     要安装的版本号
+                支持格式: x.y.z, latest, stable, lts
+
+选项:
+  --force       强制重新安装，即使版本已存在
+  --verbose     显示详细的安装过程
+  --with-docs   同时安装文档 (默认跳过以加快安装)
+  -h, --help    显示此帮助信息
+
+版本别名:
+  latest        安装最新稳定版本
+  stable        安装最新稳定版本 (同 latest)
+  lts           安装长期支持版本
+
+示例:
+  podsenv install 1.12.1          # 安装指定版本
+  podsenv install latest          # 安装最新版本
+  podsenv install 1.11.3 --force  # 强制重新安装
+  podsenv install stable --verbose # 安装最新版本并显示详细信息
+  podsenv install lts --with-docs  # 安装 LTS 版本并包含文档
+
+注意:
+  - 安装需要网络连接以下载 CocoaPods gem
+  - 安装过程会自动安装必要的依赖 (bundler, rake)
+  - 安装完成后会自动更新 shim 脚本
+  - 使用 --verbose 可以查看详细的安装日志
+EOF
+}
+
+# 显示 uninstall 命令帮助
+show_uninstall_help() {
+  cat << 'EOF'
+podsenv uninstall - 卸载 CocoaPods 版本
+
+用法: podsenv uninstall <version> [options]
+       podsenv uninstall --all [options]
+
+参数:
+  <version>     要卸载的版本号
+
+选项:
+  --all         卸载所有已安装的版本
+  --force       跳过确认提示，强制卸载
+  --verbose     显示详细的卸载过程
+  -h, --help    显示此帮助信息
+
+示例:
+  podsenv uninstall 1.11.3        # 卸载指定版本
+  podsenv uninstall 1.12.1 --force # 强制卸载，不询问确认
+  podsenv uninstall --all          # 卸载所有版本
+  podsenv uninstall --all --force  # 强制卸载所有版本
+
+注意:
+  - 卸载当前正在使用的版本会显示警告
+  - 卸载后会自动清理相关的配置和 shim
+  - 使用 --force 可以跳过确认提示
+  - 卸载不会影响系统安装的 CocoaPods
+EOF
+}
+
+# 显示 versions 命令帮助
+show_versions_help() {
+  cat << 'EOF'
+podsenv versions - 列出 CocoaPods 版本
+
+用法: podsenv versions [options]
+
+选项:
+  --bare        仅显示版本号，不显示额外信息
+  --remote      显示可安装的远程版本 (需要网络连接)
+  -h, --help    显示此帮助信息
+
+输出格式:
+  * 1.12.1      当前活跃版本 (标记为 *)
+    1.11.3      已安装版本
+    system      系统安装的版本
+
+示例:
+  podsenv versions                 # 显示已安装版本
+  podsenv versions --bare          # 仅显示版本号
+  podsenv versions --remote        # 显示可安装的远程版本
+
+注意:
+  - 当前活跃版本会用 * 标记
+  - --remote 选项需要网络连接
+  - 远程版本列表会缓存一段时间以提高性能
+EOF
+}
+
+# 显示 global 命令帮助
+show_global_help() {
+  cat << 'EOF'
+podsenv global - 管理全局默认版本
+
+用法: podsenv global [<version>] [options]
+
+参数:
+  <version>     要设置的全局版本号 (可选)
+                如果未指定，显示当前全局版本
+
+选项:
+  --unset       取消设置全局版本
+  -h, --help    显示此帮助信息
+
+示例:
+  podsenv global               # 显示当前全局版本
+  podsenv global 1.12.1        # 设置全局版本为 1.12.1
+  podsenv global latest        # 设置全局版本为最新版本
+  podsenv global --unset       # 取消全局版本设置
+
+注意:
+  - 全局版本存储在 ~/.podsenv/version 文件中
+  - 全局版本优先级低于本地版本和 shell 版本
+  - 取消全局版本后将使用系统默认版本
+  - 支持版本别名: latest, stable, lts, system
+EOF
+}
+
+# 显示 local 命令帮助
+show_local_help() {
+  cat << 'EOF'
+podsenv local - 管理项目本地版本
+
+用法: podsenv local [<version>] [options]
+
+参数:
+  <version>     要设置的本地版本号 (可选)
+                如果未指定，显示当前本地版本
+
+选项:
+  --unset       删除本地版本文件
+  --verbose     显示详细信息
+  -h, --help    显示此帮助信息
+
+示例:
+  podsenv local                # 显示当前本地版本
+  podsenv local 1.11.3         # 设置本地版本为 1.11.3
+  podsenv local system         # 设置本地版本为系统版本
+  podsenv local --unset        # 删除本地版本设置
+  podsenv local --verbose      # 显示详细的版本信息
+
+注意:
+  - 本地版本存储在 .podsenv-version 文件中
+  - 本地版本优先级高于全局版本，低于 shell 版本
+  - podsenv 会向上搜索父目录中的 .podsenv-version 文件
+  - 支持版本别名: latest, stable, lts, system
+EOF
+}
+
+# 显示 shell 命令帮助
+show_shell_help() {
+  cat << 'EOF'
+podsenv shell - 管理 shell 会话版本
+
+用法: podsenv shell <version> [options]
+       eval "$(podsenv shell <version>)"
+
+参数:
+  <version>     要设置的 shell 版本号
+
+选项:
+  --unset       取消 shell 版本设置
+  --verbose     显示详细信息
+  -h, --help    显示此帮助信息
+
+示例:
+  eval "$(podsenv shell 1.12.1)"   # 设置当前 shell 版本
+  eval "$(podsenv shell system)"   # 使用系统版本
+  eval "$(podsenv shell --unset)"  # 取消 shell 版本设置
+  podsenv shell 1.11.3 --verbose  # 显示详细的设置信息
+
+注意:
+  - shell 版本具有最高优先级
+  - 必须使用 eval 来执行输出的环境变量设置
+  - shell 版本仅在当前 shell 会话中有效
+  - 支持版本别名: latest, stable, lts, system
+  - 设置 shell 版本会导出 PODSENV_VERSION 环境变量
+EOF
+}
+
+# 显示 which 命令帮助
+show_which_help() {
+  cat << 'EOF'
+podsenv which - 显示命令路径
+
+用法: podsenv which <command> [options]
+
+参数:
+  <command>     要查找的命令名称
+
+选项:
+  --all         显示所有版本中的命令路径
+  --verbose     显示详细信息 (文件大小、权限等)
+  -h, --help    显示此帮助信息
+
+示例:
+  podsenv which pod            # 显示当前版本的 pod 命令路径
+  podsenv which pod --all      # 显示所有版本中的 pod 命令
+  podsenv which gem --verbose  # 显示 gem 命令的详细信息
+
+注意:
+  - 显示的是当前活跃版本中的命令路径
+  - --all 选项会搜索所有已安装版本
+  - 如果命令不存在，会显示错误信息
+  - --verbose 显示文件大小、权限和类型信息
+EOF
+}
+
+# 显示 exec 命令帮助
+show_exec_help() {
+  cat << 'EOF'
+podsenv exec - 在指定版本环境中执行命令
+
+用法: podsenv exec [--version <version>] <command> [args...]
+
+选项:
+  --version <version>  指定要使用的版本 (可选)
+  --dry-run           显示将要执行的命令，但不实际执行
+  --verbose           显示详细的执行信息
+  -h, --help          显示此帮助信息
+
+参数:
+  <command>           要执行的命令
+  [args...]           传递给命令的参数
+
+示例:
+  podsenv exec pod install             # 使用当前版本执行 pod install
+  podsenv exec --version 1.11.3 pod --version  # 使用指定版本执行命令
+  podsenv exec --dry-run pod install   # 显示将要执行的命令
+  podsenv exec gem list --verbose      # 显示详细的执行信息
+
+注意:
+  - 如果未指定版本，使用当前活跃版本
+  - 命令在正确的 GEM_HOME 和 PATH 环境中执行
+  - --dry-run 可用于调试和验证命令
+  - 支持版本别名: latest, stable, lts, system
+EOF
+}
+
+# 显示 version 命令帮助
+show_version_help() {
+  cat << 'EOF'
+podsenv version - 显示当前版本信息
+
+用法: podsenv version [options]
+
+选项:
+  --bare        仅显示版本号
+  --origin      显示版本来源信息
+  --verbose     显示详细信息和版本优先级
+  -h, --help    显示此帮助信息
+
+示例:
+  podsenv version              # 显示当前版本的详细信息
+  podsenv version --bare       # 仅显示版本号
+  podsenv version --origin     # 显示版本来源
+  podsenv version --verbose    # 显示详细信息和优先级
+
+输出信息:
+  - 当前活跃的 CocoaPods 版本
+  - 版本来源 (shell/local/global/system)
+  - 版本状态 (已安装/未安装)
+  - 版本优先级说明 (使用 --verbose)
+
+注意:
+  - 如果没有设置版本，会显示相应的提示信息
+  - --verbose 显示完整的版本解析优先级
+  - 版本别名会显示解析后的实际版本
+EOF
+}
+
+# 显示 prefix 命令帮助
+show_prefix_help() {
+  cat << 'EOF'
+podsenv prefix - 显示版本安装路径
+
+用法: podsenv prefix [<version>] [options]
+
+参数:
+  <version>     要查询的版本号 (可选)
+                如果未指定，显示当前版本的路径
+
+选项:
+  --all         显示所有已安装版本的路径
+  --verbose     显示详细信息
+  -h, --help    显示此帮助信息
+
+示例:
+  podsenv prefix               # 显示当前版本的安装路径
+  podsenv prefix 1.12.1        # 显示指定版本的路径
+  podsenv prefix --all         # 显示所有版本的路径
+  podsenv prefix system --verbose  # 显示系统版本的详细信息
+
+输出信息:
+  - 版本的安装目录路径
+  - GEM_HOME 和可执行文件目录 (使用 --verbose)
+  - 已安装 gems 数量 (使用 --verbose)
+  - 文件状态和权限信息 (使用 --verbose)
+
+注意:
+  - 路径指向版本的根安装目录
+  - system 版本显示系统 CocoaPods 的路径
+  - --all 选项包括系统版本 (如果可用)
+EOF
+}
+
+# 显示 rehash 命令帮助
+show_rehash_help() {
+  cat << 'EOF'
+podsenv rehash - 重建 shim 脚本
+
+用法: podsenv rehash [options]
+
+选项:
+  --verbose     显示详细的重建过程
+  -h, --help    显示此帮助信息
+
+Shim 脚本:
+  Shim 是 podsenv 创建的代理脚本，用于自动选择正确的 CocoaPods 版本。
+  当您安装新版本或版本中的可执行文件发生变化时，需要重建 shim。
+
+示例:
+  podsenv rehash               # 重建所有 shim 脚本
+  podsenv rehash --verbose     # 显示详细的重建过程
+
+何时需要 rehash:
+  - 安装新的 CocoaPods 版本后
+  - 在版本中安装新的 gems 后
+  - Shim 脚本损坏或丢失时
+  - 手动清理 shims 目录后
+
+注意:
+  - rehash 会扫描所有已安装版本的可执行文件
+  - 自动排除某些系统命令 (ruby, gem, bundle 等)
+  - 重建过程通常很快，可以安全地重复执行
+EOF
+}
+
+# 显示 init 命令帮助
+show_init_help() {
+  cat << 'EOF'
+podsenv init - 生成 shell 初始化代码
+
+用法: podsenv init [shell] [options]
+       eval "$(podsenv init)"
+
+参数:
+  [shell]       指定 shell 类型 (bash, zsh, fish)
+                如果未指定，自动检测当前 shell
+
+选项:
+  --no-rehash   不包含自动 rehash 功能
+  --path        仅输出 PATH 设置，不包含 shell 函数
+  -h, --help    显示此帮助信息
+
+示例:
+  eval "$(podsenv init)"           # 初始化当前 shell
+  eval "$(podsenv init bash)"      # 为 bash 初始化
+  eval "$(podsenv init --path)"    # 仅设置 PATH
+
+初始化内容:
+  - 将 podsenv shims 目录添加到 PATH
+  - 定义 podsenv shell 函数
+  - 设置命令补全 (如果支持)
+  - 可选的自动 rehash 功能
+
+安装到 shell 配置:
+  # Bash
+  echo 'eval "$(podsenv init)"' >> ~/.bashrc
+  
+  # Zsh
+  echo 'eval "$(podsenv init)"' >> ~/.zshrc
+  
+  # Fish
+  echo 'podsenv init - | source' >> ~/.config/fish/config.fish
+
+注意:
+  - 必须使用 eval 来执行输出的初始化代码
+  - 建议将初始化代码添加到 shell 配置文件中
+  - 初始化后需要重新启动 shell 或重新加载配置
+EOF
+}
+
+# 显示 doctor 命令帮助
+show_doctor_help() {
+  cat << 'EOF'
+podsenv doctor - 诊断安装和配置问题
+
+用法: podsenv doctor [options]
+
+选项:
+  --fix         尝试自动修复发现的问题
+  --verbose     显示详细的诊断信息
+  --quiet       仅显示错误和警告，跳过成功的检查
+  -h, --help    显示此帮助信息
+
+检查项目:
+  - podsenv 安装完整性
+  - PATH 配置正确性
+  - Shell 集成状态
+  - 版本管理功能
+  - Shim 脚本状态
+  - 文件权限
+  - 网络连接
+  - 系统依赖
+
+示例:
+  podsenv doctor               # 运行完整诊断
+  podsenv doctor --fix         # 诊断并尝试修复问题
+  podsenv doctor --verbose     # 显示详细诊断信息
+  podsenv doctor --quiet       # 仅显示问题
+
+输出格式:
+  ✓ 检查通过的项目
+  ⚠ 警告 (不影响基本功能)
+  ✗ 失败的检查项目
+
+注意:
+  - doctor 可以帮助诊断常见的配置问题
+  - --fix 选项会尝试自动修复权限和目录问题
+  - 某些问题可能需要手动修复
+  - 建议在遇到问题时首先运行 doctor
+EOF
+}
+
+# 显示 plugin 命令帮助
+show_plugin_help() {
+  cat << 'EOF'
+podsenv plugin - 管理 podsenv 插件
+
+用法: podsenv plugin <subcommand> [options]
+
+子命令:
+  list                    列出所有可用插件
+  install <url> [name]    从 git 仓库安装插件
+  uninstall <name>        卸载插件
+  enable <name>           启用插件
+  disable <name>          禁用插件
+  update [name]           更新插件
+  info <name>             显示插件信息
+
+选项:
+  --verbose, -v           显示详细输出
+  --force, -f             强制执行操作
+  --help, -h              显示帮助信息
+
+示例:
+  podsenv plugin list
+  podsenv plugin install https://github.com/user/podsenv-plugin.git
+  podsenv plugin install https://github.com/user/plugin.git my-plugin
+  podsenv plugin enable my-plugin
+  podsenv plugin disable my-plugin
+  podsenv plugin update
+  podsenv plugin update my-plugin
+  podsenv plugin info my-plugin
+  podsenv plugin uninstall my-plugin
+
+插件结构:
+  插件应该包含以下文件:
+  - init.sh              # 插件初始化脚本
+  - hooks/               # 钩子脚本目录
+    - before_install.sh  # 安装前钩子
+    - after_install.sh   # 安装后钩子
+    - 其他钩子...
+  - README.md            # 插件说明文档
+
+可用钩子:
+  - before_install       # CocoaPods 安装前
+  - after_install        # CocoaPods 安装后
+  - before_uninstall     # CocoaPods 卸载前
+  - after_uninstall      # CocoaPods 卸载后
+  - before_version_change # 版本切换前
+  - after_version_change  # 版本切换后
+  - before_rehash        # 重建 shim 前
+  - after_rehash         # 重建 shim 后
+
+注意:
+  - 插件会按字母顺序加载
+  - 禁用的插件不会被加载
+  - 插件可以扩展 podsenv 的功能
+  - 建议从可信来源安装插件
+EOF
+}
+
+# 显示特定命令的帮助
+show_command_help() {
+  local command="$1"
+  
+  case "$command" in
+    "install")
+      show_install_help
+      ;;
+    "uninstall")
+      show_uninstall_help
+      ;;
+    "versions")
+      show_versions_help
+      ;;
+    "global")
+      show_global_help
+      ;;
+    "local")
+      show_local_help
+      ;;
+    "shell")
+      show_shell_help
+      ;;
+    "which")
+      show_which_help
+      ;;
+    "exec")
+      show_exec_help
+      ;;
+    "version")
+      show_version_help
+      ;;
+    "prefix")
+      show_prefix_help
+      ;;
+    "rehash")
+      show_rehash_help
+      ;;
+    "init")
+      show_init_help
+      ;;
+    "doctor")
+      show_doctor_help
+      ;;
+    "plugin")
+      show_plugin_help
+      ;;
+    "help")
+      cat << 'EOF'
+podsenv help - 显示帮助信息
+
+用法: podsenv help [<command>]
+
+参数:
+  <command>     要查看帮助的命令名称 (可选)
+                如果未指定，显示主帮助信息
+
+示例:
+  podsenv help              # 显示主帮助信息
+  podsenv help install      # 显示 install 命令帮助
+  podsenv help global       # 显示 global 命令帮助
+
+可用的帮助主题:
+  install, uninstall, versions, global, local, shell,
+  which, exec, version, prefix, rehash, init, doctor, plugin
+EOF
+      ;;
+    *)
+      echo "Unknown command: $command"
+      echo
+      echo "Available commands:"
+      echo "  install, uninstall, versions, global, local, shell,"
+      echo "  which, exec, version, prefix, rehash, init, doctor, plugin, help"
+      echo
+      echo "Use 'podsenv help <command>' for detailed help on a specific command."
+      return 1
+      ;;
+  esac
+}
+
+# 主函数
+main() {
+  local command="${1:-}"
+  
+  if [ -z "$command" ]; then
+    show_main_help
+  else
+    show_command_help "$command"
+  fi
+}
+
+# 执行主函数
+main "$@"

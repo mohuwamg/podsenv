@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# Podsenv Shell Command
+# 在当前 shell 会话中设置 CocoaPods 版本
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 选项
+UNSET=false
+VERBOSE=false
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --unset)
+        UNSET=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help shell
+        ;;
+      -*)
+        podsenv_error "Unknown option: $1"
+        ;;
+      *)
+        # 版本参数
+        if [ -n "${VERSION:-}" ]; then
+          podsenv_error "Multiple versions specified: $VERSION and $1"
+        fi
+        VERSION="$1"
+        shift
+        ;;
+    esac
+  done
+}
+
+# 获取当前 shell 版本
+get_current_shell_version() {
+  echo "${PODSENV_VERSION:-}"
+}
+
+# 显示当前 shell 版本
+show_current_shell_version() {
+  local current_version
+  current_version="$(get_current_shell_version)"
+  
+  if [ -n "$current_version" ]; then
+    # 解析别名
+    local resolved_version
+    resolved_version="$(podsenv_resolve_alias "$current_version" 2>/dev/null || echo "$current_version")"
+    
+    if [ "$current_version" != "$resolved_version" ]; then
+      echo "$current_version -> $resolved_version"
+    else
+      echo "$current_version"
+    fi
+    
+    # 显示详细信息
+    if [ "$VERBOSE" = "true" ]; then
+      echo
+      echo "Shell version: $current_version"
+      echo "Environment variable: PODSENV_VERSION"
+      
+      if [ "$resolved_version" != "system" ]; then
+        local version_dir
+        version_dir="$(podsenv_version_dir "$resolved_version")"
+        
+        if [ -d "$version_dir" ]; then
+          echo "Version directory: $version_dir"
+          echo "Status: installed"
+        else
+          echo "Status: not installed"
+        fi
+      else
+        echo "Status: system version"
+      fi
+      
+      echo
+      echo "This version is only active in the current shell session."
+      echo "To make it permanent, use 'podsenv global' or 'podsenv local'."
+    fi
+  else
+    echo "No shell version set"
+    
+    if [ "$VERBOSE" = "true" ]; then
+      echo
+      echo "The shell version overrides local and global versions."
+      echo "To set a shell version, run:"
+      echo "  podsenv shell <version>"
+      echo
+      echo "Available versions:"
+      podsenv_installed_versions | sed 's/^/  /'
+    fi
+  fi
+}
+
+# 设置 shell 版本
+set_shell_version() {
+  local version="$1"
+  local resolved_version
+  
+  # 验证版本格式
+  if ! podsenv_version_valid "$version"; then
+    podsenv_error "Invalid version format: $version"
+  fi
+  
+  # 解析别名
+  resolved_version="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+  
+  # 检查版本是否可用
+  if ! podsenv_version_available "$resolved_version"; then
+    if [ "$resolved_version" = "system" ]; then
+      podsenv_error "System CocoaPods not found. Install CocoaPods system-wide first."
+    else
+      podsenv_error "CocoaPods $resolved_version is not installed. Run 'podsenv install $resolved_version' first."
+    fi
+  fi
+  
+  # 输出 shell 命令来设置环境变量
+  echo "export PODSENV_VERSION=\"$version\""
+  
+  # 设置版本相关的环境变量
+  podsenv_set_version_env "$resolved_version" | while IFS= read -r line; do
+    echo "export $line"
+  done
+  
+  # 输出成功消息到 stderr（这样不会影响 eval）
+  echo "podsenv: shell version set to $version" >&2
+  
+  if [ "$version" != "$resolved_version" ]; then
+    echo "podsenv: resolved to $resolved_version" >&2
+  fi
+  
+  # 显示详细信息
+  if [ "$VERBOSE" = "true" ]; then
+    echo "podsenv: this version is active only in the current shell session" >&2
+    
+    if [ "$resolved_version" != "system" ]; then
+      local version_dir
+      version_dir="$(podsenv_version_dir "$resolved_version")"
+      echo "podsenv: version directory: $version_dir" >&2
+    fi
+    
+    echo "podsenv: to make this version permanent, run:" >&2
+    echo "podsenv:   podsenv global $version" >&2
+    echo "podsenv:   podsenv local $version" >&2
+  fi
+}
+
+# 取消设置 shell 版本
+unset_shell_version() {
+  local current_version
+  current_version="$(get_current_shell_version)"
+  
+  if [ -z "$current_version" ]; then
+    echo "podsenv: no shell version set" >&2
+    return
+  fi
+  
+  # 输出 shell 命令来取消设置环境变量
+  echo "unset PODSENV_VERSION"
+  
+  # 取消设置版本相关的环境变量
+  echo "unset GEM_HOME"
+  echo "unset GEM_PATH"
+  
+  # 输出成功消息到 stderr
+  echo "podsenv: shell version unset (was: $current_version)" >&2
+  
+  if [ "$VERBOSE" = "true" ]; then
+    echo "podsenv: the global or local version will now be used" >&2
+    
+    # 显示将要使用的版本
+    local next_version
+    next_version="$(podsenv_detect_version 2>/dev/null || echo "")"
+    
+    if [ -n "$next_version" ]; then
+      local source
+      source="$(podsenv_version_source "$next_version" 2>/dev/null || echo "unknown")"
+      echo "podsenv: next version: $next_version (from $source)" >&2
+    else
+      echo "podsenv: no version will be active" >&2
+    fi
+  fi
+}
+
+# 验证 shell 版本
+validate_shell_version() {
+  local current_version
+  current_version="$(get_current_shell_version)"
+  
+  if [ -z "$current_version" ]; then
+    return
+  fi
+  
+  local resolved_version
+  resolved_version="$(podsenv_resolve_alias "$current_version" 2>/dev/null || echo "$current_version")"
+  
+  if ! podsenv_version_available "$resolved_version"; then
+    echo "podsenv: warning: shell version $current_version is not available" >&2
+    
+    if [ "$resolved_version" != "system" ]; then
+      echo "podsenv: run 'podsenv install $resolved_version' to install it" >&2
+    else
+      echo "podsenv: install CocoaPods system-wide or choose a different version" >&2
+    fi
+    
+    return 1
+  fi
+  
+  return 0
+}
+
+# 显示版本优先级信息
+show_version_priority() {
+  if [ "$VERBOSE" = "false" ]; then
+    return
+  fi
+  
+  echo "Version priority (highest to lowest):" >&2
+  echo "  1. Shell version (PODSENV_VERSION)" >&2
+  echo "  2. Local version (.podsenv-version)" >&2
+  echo "  3. Global version (~/.podsenv/version)" >&2
+  echo "  4. System version" >&2
+  echo >&2
+  
+  # 显示当前各级别的版本
+  local shell_version local_version global_version
+  
+  shell_version="$(get_current_shell_version)"
+  local_version="$(podsenv_get_local_version 2>/dev/null || echo "")"
+  global_version="$(podsenv_get_global_version 2>/dev/null || echo "")"
+  
+  echo "Current versions:" >&2
+  echo "  Shell:  ${shell_version:-"(not set)"} ${shell_version:+"← active"}" >&2
+  echo "  Local:  ${local_version:-"(not set)"}" >&2
+  echo "  Global: ${global_version:-"(not set)"}" >&2
+  
+  if podsenv_command_exists "pod"; then
+    echo "  System: $(pod --version 2>/dev/null || echo "(not found)")" >&2
+  else
+    echo "  System: (not found)" >&2
+  fi
+}
+
+# 主函数
+main() {
+  local VERSION=""
+  
+  # 解析参数
+  parse_args "$@"
+  
+  # 处理不同情况
+  if [ "$UNSET" = "true" ]; then
+    # 取消设置 shell 版本
+    unset_shell_version
+  elif [ -n "$VERSION" ]; then
+    # 设置 shell 版本
+    set_shell_version "$VERSION"
+  else
+    # 显示当前 shell 版本
+    show_current_shell_version
+    
+    # 显示版本优先级信息（详细模式）
+    show_version_priority
+  fi
+  
+  # 验证当前设置
+  if [ "$UNSET" = "false" ] && [ -z "$VERSION" ]; then
+    validate_shell_version || true
+  fi
+}
+
+# 执行主函数
+main "$@"

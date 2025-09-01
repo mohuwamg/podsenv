@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# podsenv plugin management command
+# Usage: podsenv plugin <subcommand> [options]
+
+set -e
+
+# Load podsenv core and plugin libraries
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+source "${PODSENV_ROOT}/lib/podsenv-plugin.sh"
+
+# Parse arguments
+parse_args() {
+    SUBCOMMAND=""
+    PLUGIN_NAME=""
+    PLUGIN_URL=""
+    VERBOSE=false
+    FORCE=false
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            list|install|uninstall|enable|disable|update|info)
+                SUBCOMMAND="$1"
+                shift
+                ;;
+            --verbose|-v)
+                VERBOSE=true
+                shift
+                ;;
+            --force|-f)
+                FORCE=true
+                shift
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$PLUGIN_NAME" ]]; then
+                    PLUGIN_NAME="$1"
+                elif [[ -z "$PLUGIN_URL" ]]; then
+                    PLUGIN_URL="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    if [[ -z "$SUBCOMMAND" ]]; then
+        SUBCOMMAND="list"
+    fi
+}
+
+# Show help
+show_help() {
+    cat << 'EOF'
+Usage: podsenv plugin <subcommand> [options]
+
+Subcommands:
+  list                    List all available plugins
+  install <url> [name]    Install a plugin from git repository
+  uninstall <name>        Uninstall a plugin
+  enable <name>           Enable a plugin
+  disable <name>          Disable a plugin
+  update [name]           Update plugin(s)
+  info <name>             Show plugin information
+
+Options:
+  --verbose, -v           Show detailed output
+  --force, -f             Force operation without confirmation
+  --help, -h              Show this help message
+
+Examples:
+  podsenv plugin list
+  podsenv plugin install https://github.com/user/podsenv-plugin.git
+  podsenv plugin enable my-plugin
+  podsenv plugin disable my-plugin
+  podsenv plugin update
+  podsenv plugin update my-plugin
+  podsenv plugin uninstall my-plugin
+EOF
+}
+
+# List plugins
+cmd_list() {
+    podsenv_list_plugins
+}
+
+# Install plugin
+cmd_install() {
+    if [[ -z "$PLUGIN_NAME" ]]; then
+        echo "Error: Plugin URL is required" >&2
+        echo "Usage: podsenv plugin install <url> [name]" >&2
+        exit 1
+    fi
+    
+    local url="$PLUGIN_NAME"
+    local name="$PLUGIN_URL"
+    
+    if [[ $VERBOSE == true ]]; then
+        echo "Installing plugin from: $url"
+        if [[ -n "$name" ]]; then
+            echo "Plugin name: $name"
+        fi
+    fi
+    
+    podsenv_install_plugin "$url" "$name"
+}
+
+# Uninstall plugin
+cmd_uninstall() {
+    if [[ -z "$PLUGIN_NAME" ]]; then
+        echo "Error: Plugin name is required" >&2
+        echo "Usage: podsenv plugin uninstall <name>" >&2
+        exit 1
+    fi
+    
+    local plugin_dir="$PODSENV_PLUGIN_DIR/$PLUGIN_NAME"
+    
+    if [[ ! -d "$plugin_dir" ]]; then
+        echo "Error: Plugin '$PLUGIN_NAME' not found" >&2
+        exit 1
+    fi
+    
+    # Confirm uninstallation unless --force is used
+    if [[ $FORCE != true ]]; then
+        echo "Are you sure you want to uninstall plugin '$PLUGIN_NAME'? [y/N]"
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "Uninstallation cancelled"
+            exit 0
+        fi
+    fi
+    
+    if [[ $VERBOSE == true ]]; then
+        echo "Uninstalling plugin: $PLUGIN_NAME"
+    fi
+    
+    podsenv_uninstall_plugin "$PLUGIN_NAME"
+}
+
+# Enable plugin
+cmd_enable() {
+    if [[ -z "$PLUGIN_NAME" ]]; then
+        echo "Error: Plugin name is required" >&2
+        echo "Usage: podsenv plugin enable <name>" >&2
+        exit 1
+    fi
+    
+    if [[ $VERBOSE == true ]]; then
+        echo "Enabling plugin: $PLUGIN_NAME"
+    fi
+    
+    podsenv_enable_plugin "$PLUGIN_NAME"
+}
+
+# Disable plugin
+cmd_disable() {
+    if [[ -z "$PLUGIN_NAME" ]]; then
+        echo "Error: Plugin name is required" >&2
+        echo "Usage: podsenv plugin disable <name>" >&2
+        exit 1
+    fi
+    
+    if [[ $VERBOSE == true ]]; then
+        echo "Disabling plugin: $PLUGIN_NAME"
+    fi
+    
+    podsenv_disable_plugin "$PLUGIN_NAME"
+}
+
+# Update plugin(s)
+cmd_update() {
+    if [[ -z "$PLUGIN_NAME" ]]; then
+        if [[ $VERBOSE == true ]]; then
+            echo "Updating all plugins"
+        fi
+        podsenv_update_all_plugins
+    else
+        if [[ $VERBOSE == true ]]; then
+            echo "Updating plugin: $PLUGIN_NAME"
+        fi
+        podsenv_update_plugin "$PLUGIN_NAME"
+    fi
+}
+
+# Show plugin info
+cmd_info() {
+    if [[ -z "$PLUGIN_NAME" ]]; then
+        echo "Error: Plugin name is required" >&2
+        echo "Usage: podsenv plugin info <name>" >&2
+        exit 1
+    fi
+    
+    local plugin_dir="$PODSENV_PLUGIN_DIR/$PLUGIN_NAME"
+    
+    if [[ ! -d "$plugin_dir" ]]; then
+        echo "Error: Plugin '$PLUGIN_NAME' not found" >&2
+        exit 1
+    fi
+    
+    echo "Plugin: $PLUGIN_NAME"
+    echo "Path: $plugin_dir"
+    
+    if podsenv_plugin_enabled "$PLUGIN_NAME"; then
+        echo "Status: enabled"
+    else
+        echo "Status: disabled"
+    fi
+    
+    # Show plugin description if available
+    local readme_file="$plugin_dir/README.md"
+    if [[ -f "$readme_file" ]]; then
+        echo ""
+        echo "Description:"
+        head -n 5 "$readme_file" | sed 's/^/  /'
+    fi
+    
+    # Show plugin version if it's a git repository
+    if [[ -d "$plugin_dir/.git" ]]; then
+        cd "$plugin_dir"
+        local commit_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        local commit_date=$(git log -1 --format=%cd --date=short 2>/dev/null || echo "unknown")
+        echo ""
+        echo "Git info:"
+        echo "  Commit: $commit_hash"
+        echo "  Date: $commit_date"
+    fi
+    
+    # Show available hooks
+    local hooks_dir="$plugin_dir/hooks"
+    if [[ -d "$hooks_dir" ]]; then
+        echo ""
+        echo "Available hooks:"
+        for hook_file in "$hooks_dir"/*.sh; do
+            if [[ -f "$hook_file" ]]; then
+                local hook_name=$(basename "$hook_file" .sh)
+                echo "  $hook_name"
+            fi
+        done
+    fi
+}
+
+# Main function
+main() {
+    parse_args "$@"
+    
+    # Ensure plugin directory exists
+    mkdir -p "$PODSENV_PLUGIN_DIR"
+    mkdir -p "$PODSENV_PLUGIN_HOOKS_DIR"
+    
+    case "$SUBCOMMAND" in
+        list)
+            cmd_list
+            ;;
+        install)
+            cmd_install
+            ;;
+        uninstall)
+            cmd_uninstall
+            ;;
+        enable)
+            cmd_enable
+            ;;
+        disable)
+            cmd_disable
+            ;;
+        update)
+            cmd_update
+            ;;
+        info)
+            cmd_info
+            ;;
+        *)
+            echo "Unknown subcommand: $SUBCOMMAND" >&2
+            echo "Run 'podsenv plugin --help' for usage information" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Run main function
+main "$@"

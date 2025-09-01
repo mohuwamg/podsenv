@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# Podsenv - CocoaPods Version Manager
+# Main executable file
+
+set -euo pipefail
+
+# 确定 PODSENV_ROOT
+if [ -z "${PODSENV_ROOT:-}" ]; then
+  if [ -n "${BASH_SOURCE:-}" ]; then
+    PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+  else
+    PODSENV_ROOT="${HOME}/.podsenv"
+  fi
+fi
+
+export PODSENV_ROOT
+
+# 加载核心库
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+
+# 初始化环境
+podsenv_init
+podsenv_load_config
+
+# 命令帮助信息
+podsenv_help() {
+  local command="${1:-}"
+  
+  case "$command" in
+    "install")
+      cat << 'EOF'
+Usage: podsenv install <version>
+
+Install a specific version of CocoaPods.
+
+Examples:
+  podsenv install 1.16.2        # Install version 1.16.2
+  podsenv install latest        # Install the latest version
+  podsenv install stable        # Install the stable version
+
+Options:
+  -f, --force                   # Force reinstall even if already installed
+  -v, --verbose                 # Show verbose output
+EOF
+      ;;
+    "uninstall")
+      cat << 'EOF'
+Usage: podsenv uninstall <version>
+
+Uninstall a specific version of CocoaPods.
+
+Examples:
+  podsenv uninstall 1.16.2      # Uninstall version 1.16.2
+  podsenv uninstall --all       # Uninstall all versions
+EOF
+      ;;
+    "global")
+      cat << 'EOF'
+Usage: podsenv global [version]
+
+Set or show the global CocoaPods version.
+
+Examples:
+  podsenv global                # Show current global version
+  podsenv global 1.16.2         # Set global version to 1.16.2
+  podsenv global latest         # Set global version to latest
+EOF
+      ;;
+    "local")
+      cat << 'EOF'
+Usage: podsenv local [version]
+
+Set or show the local CocoaPods version for the current directory.
+
+Examples:
+  podsenv local                 # Show current local version
+  podsenv local 1.16.2          # Set local version to 1.16.2
+  podsenv local --unset         # Remove local version setting
+EOF
+      ;;
+    "shell")
+      cat << 'EOF'
+Usage: podsenv shell [version]
+
+Set or show the shell-specific CocoaPods version.
+
+Examples:
+  podsenv shell                 # Show current shell version
+  podsenv shell 1.16.2          # Set shell version to 1.16.2
+  podsenv shell --unset         # Remove shell version setting
+EOF
+      ;;
+    "versions")
+      cat << 'EOF'
+Usage: podsenv versions [options]
+
+List installed CocoaPods versions.
+
+Options:
+  --bare                        # List versions without additional info
+  --remote                      # List available remote versions
+EOF
+      ;;
+    "which")
+      cat << 'EOF'
+Usage: podsenv which <command>
+
+Show the full path to the executable for the given command.
+
+Examples:
+  podsenv which pod             # Show path to pod command
+EOF
+      ;;
+    "exec")
+      cat << 'EOF'
+Usage: podsenv exec <version> <command> [args...]
+
+Execute a command with a specific CocoaPods version.
+
+Examples:
+  podsenv exec 1.16.2 pod --version
+  podsenv exec latest pod install
+EOF
+      ;;
+    "prefix")
+      cat << 'EOF'
+Usage: podsenv prefix [version]
+
+Show the installation prefix for a CocoaPods version.
+
+Examples:
+  podsenv prefix                # Show prefix for current version
+  podsenv prefix 1.16.2         # Show prefix for version 1.16.2
+EOF
+      ;;
+    "rehash")
+      cat << 'EOF'
+Usage: podsenv rehash
+
+Rebuild shim scripts for all installed CocoaPods versions.
+Run this after installing or uninstalling versions.
+EOF
+      ;;
+    "init")
+      cat << 'EOF'
+Usage: podsenv init [shell]
+
+Output shell initialization code.
+Add this to your shell profile:
+
+  # For bash/zsh
+  eval "$(podsenv init -)"
+  
+  # For fish
+  podsenv init - | source
+EOF
+      ;;
+    "doctor")
+      cat << 'EOF'
+Usage: podsenv doctor
+
+Diagnose podsenv installation and environment issues.
+This command checks for common problems and suggests fixes.
+EOF
+      ;;
+    *)
+      cat << EOF
+Podsenv ${PODSENV_VERSION} - CocoaPods Version Manager
+
+Usage: podsenv <command> [args...]
+
+Commands:
+  install <version>             Install a CocoaPods version
+  uninstall <version>           Uninstall a CocoaPods version
+  global [version]              Set or show global version
+  local [version]               Set or show local version
+  shell [version]               Set or show shell version
+  versions                      List installed versions
+  which <command>               Show command path
+  exec <version> <command>      Execute command with specific version
+  prefix [version]              Show installation prefix
+  rehash                        Rebuild shim scripts
+  init [shell]                  Output shell initialization code
+  doctor                        Diagnose installation issues
+  version                       Show podsenv version
+  help [command]                Show help for command
+
+Examples:
+  podsenv install 1.16.2        # Install CocoaPods 1.16.2
+  podsenv global 1.16.2         # Set global version to 1.16.2
+  podsenv local 1.12.0          # Set local version to 1.12.0
+  podsenv versions              # List installed versions
+  podsenv which pod             # Show pod command path
+
+For more information on a specific command, run:
+  podsenv help <command>
+
+Project: https://github.com/your-username/podsenv
+EOF
+      ;;
+  esac
+}
+
+# 主函数
+podsenv_main() {
+  local command="${1:-help}"
+  
+  case "$command" in
+    "install")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-install" "$@"
+      ;;
+    "uninstall")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-uninstall" "$@"
+      ;;
+    "global")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-global" "$@"
+      ;;
+    "local")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-local" "$@"
+      ;;
+    "shell")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-shell" "$@"
+      ;;
+    "versions")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-versions" "$@"
+      ;;
+    "which")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-which" "$@"
+      ;;
+    "exec")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-exec" "$@"
+      ;;
+    "prefix")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-prefix" "$@"
+      ;;
+    "rehash")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-rehash" "$@"
+      ;;
+    "init")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-init" "$@"
+      ;;
+    "doctor")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-doctor" "$@"
+      ;;
+    "plugin")
+      shift
+      exec "${PODSENV_ROOT}/libexec/podsenv-plugin" "$@"
+      ;;
+    "version" | "--version" | "-v")
+      echo "podsenv ${PODSENV_VERSION}"
+      ;;
+    "help" | "--help" | "-h")
+      shift
+      podsenv_help "$@"
+      ;;
+    *)
+      if [ -n "$command" ]; then
+        podsenv_error "Unknown command: $command\nRun 'podsenv help' for usage information."
+      else
+        podsenv_help
+      fi
+      ;;
+  esac
+}
+
+# 检查是否作为库被加载
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  podsenv_main "$@"
+fi

@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+# Podsenv Which Command
+# 显示指定命令的完整路径
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 选项
+VERBOSE=false
+ALL=false
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -a|--all)
+        ALL=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help which
+        ;;
+      -*)
+        podsenv_error "Unknown option: $1"
+        ;;
+      *)
+        # 命令参数
+        if [ -n "${COMMAND:-}" ]; then
+          podsenv_error "Multiple commands specified: $COMMAND and $1"
+        fi
+        COMMAND="$1"
+        shift
+        ;;
+    esac
+  done
+  
+  # 检查是否提供了命令
+  if [ -z "${COMMAND:-}" ]; then
+    podsenv_error "No command specified"
+  fi
+}
+
+# 查找命令在指定版本中的路径
+find_command_in_version() {
+  local version="$1"
+  local command="$2"
+  local bin_dir
+  local command_path
+  
+  if [ "$version" = "system" ]; then
+    # 系统版本：在 PATH 中查找（排除 shims 目录）
+    local path_without_shims
+    path_without_shims="$(echo "$PATH" | tr ':' '\n' | grep -v "$PODSENV_SHIMS_DIR" | tr '\n' ':' | sed 's/:$//')"
+    
+    command_path="$(PATH="$path_without_shims" command -v "$command" 2>/dev/null || echo "")"
+  else
+    # 特定版本：在版本的 bin 目录中查找
+    bin_dir="$(podsenv_gem_bin_dir "$version")"
+    command_path="${bin_dir}/${command}"
+    
+    if [ ! -x "$command_path" ]; then
+      command_path=""
+    fi
+  fi
+  
+  echo "$command_path"
+}
+
+# 显示命令路径
+show_command_path() {
+  local command="$1"
+  local current_version
+  local command_path
+  
+  # 获取当前版本
+  current_version="$(podsenv_detect_version 2>/dev/null || echo "")"
+  
+  if [ -z "$current_version" ]; then
+    podsenv_error "No CocoaPods version specified"
+  fi
+  
+  # 查找命令路径
+  command_path="$(find_command_in_version "$current_version" "$command")"
+  
+  if [ -z "$command_path" ]; then
+    if [ "$current_version" = "system" ]; then
+      podsenv_error "$command: command not found in system"
+    else
+      podsenv_error "$command: command not found in CocoaPods $current_version"
+    fi
+  fi
+  
+  echo "$command_path"
+  
+  # 显示详细信息
+  if [ "$VERBOSE" = "true" ]; then
+    echo >&2
+    echo "Command: $command" >&2
+    echo "Version: $current_version" >&2
+    echo "Path: $command_path" >&2
+    
+    if [ "$current_version" != "system" ]; then
+      local version_dir
+      version_dir="$(podsenv_version_dir "$current_version")"
+      echo "Version directory: $version_dir" >&2
+    fi
+    
+    # 显示版本来源
+    local version_source
+    version_source="$(podsenv_version_source "$current_version" 2>/dev/null || echo "unknown")"
+    echo "Version source: $version_source" >&2
+    
+    # 显示文件信息
+    if [ -f "$command_path" ]; then
+      echo "File size: $(stat -f%z "$command_path" 2>/dev/null || echo "unknown") bytes" >&2
+      echo "File permissions: $(stat -f%Mp%Lp "$command_path" 2>/dev/null || echo "unknown")" >&2
+      
+      # 检查是否是 Ruby 脚本
+      if head -n1 "$command_path" 2>/dev/null | grep -q "ruby"; then
+        echo "Type: Ruby script" >&2
+      else
+        echo "Type: $(file -b "$command_path" 2>/dev/null || echo "unknown")" >&2
+      fi
+    fi
+  fi
+}
+
+# 显示所有版本中的命令路径
+show_all_command_paths() {
+  local command="$1"
+  local versions
+  local found_any=false
+  
+  # 获取所有已安装版本
+  versions="$(podsenv_installed_versions)"
+  
+  # 添加系统版本
+  if podsenv_command_exists "$command"; then
+    versions="${versions}${versions:+$'\n'}system"
+  fi
+  
+  if [ -z "$versions" ]; then
+    podsenv_error "No CocoaPods versions installed"
+  fi
+  
+  echo "All paths for '$command':"
+  echo
+  
+  # 遍历所有版本
+  while IFS= read -r version; do
+    if [ -n "$version" ]; then
+      local command_path
+      command_path="$(find_command_in_version "$version" "$command")"
+      
+      if [ -n "$command_path" ]; then
+        echo "  $version: $command_path"
+        found_any=true
+        
+        if [ "$VERBOSE" = "true" ]; then
+          if [ -f "$command_path" ]; then
+            local file_info
+            file_info="$(file -b "$command_path" 2>/dev/null || echo "unknown")"
+            echo "    Type: $file_info"
+            
+            local file_size
+            file_size="$(stat -f%z "$command_path" 2>/dev/null || echo "unknown")"
+            echo "    Size: $file_size bytes"
+          fi
+          echo
+        fi
+      else
+        echo "  $version: (not found)"
+        
+        if [ "$VERBOSE" = "true" ]; then
+          if [ "$version" != "system" ]; then
+            local bin_dir
+            bin_dir="$(podsenv_gem_bin_dir "$version")"
+            echo "    Searched in: $bin_dir"
+          else
+            echo "    Searched in: system PATH"
+          fi
+          echo
+        fi
+      fi
+    fi
+  done <<< "$versions"
+  
+  if [ "$found_any" = "false" ]; then
+    echo
+    echo "Command '$command' not found in any installed version."
+    
+    if [ "$VERBOSE" = "true" ]; then
+      echo
+      echo "Available commands:"
+      
+      # 显示可用命令
+      while IFS= read -r version; do
+        if [ -n "$version" ] && [ "$version" != "system" ]; then
+          local bin_dir
+          bin_dir="$(podsenv_gem_bin_dir "$version")"
+          
+          if [ -d "$bin_dir" ]; then
+            echo "  $version:"
+            find "$bin_dir" -type f -executable -exec basename {} \; 2>/dev/null | sort | sed 's/^/    /' || true
+          fi
+        fi
+      done <<< "$versions"
+    fi
+  fi
+}
+
+# 检查命令是否存在于当前版本
+check_command_exists() {
+  local command="$1"
+  local current_version
+  local command_path
+  
+  current_version="$(podsenv_detect_version 2>/dev/null || echo "")"
+  
+  if [ -z "$current_version" ]; then
+    return 1
+  fi
+  
+  command_path="$(find_command_in_version "$current_version" "$command")"
+  
+  [ -n "$command_path" ]
+}
+
+# 显示命令信息摘要
+show_command_summary() {
+  local command="$1"
+  local current_version
+  
+  current_version="$(podsenv_detect_version 2>/dev/null || echo "")"
+  
+  if [ -z "$current_version" ]; then
+    echo "No CocoaPods version active"
+    return
+  fi
+  
+  echo "Current version: $current_version"
+  
+  local version_source
+  version_source="$(podsenv_version_source "$current_version" 2>/dev/null || echo "unknown")"
+  echo "Version source: $version_source"
+  
+  if check_command_exists "$command"; then
+    echo "Command '$command': available"
+  else
+    echo "Command '$command': not available"
+  fi
+}
+
+# 主函数
+main() {
+  local COMMAND=""
+  
+  # 解析参数
+  parse_args "$@"
+  
+  # 处理不同情况
+  if [ "$ALL" = "true" ]; then
+    # 显示所有版本中的命令路径
+    show_all_command_paths "$COMMAND"
+  else
+    # 显示当前版本中的命令路径
+    show_command_path "$COMMAND"
+  fi
+  
+  # 显示命令摘要（详细模式且非全部模式）
+  if [ "$VERBOSE" = "true" ] && [ "$ALL" = "false" ]; then
+    echo >&2
+    show_command_summary "$COMMAND" >&2
+  fi
+}
+
+# 执行主函数
+main "$@"

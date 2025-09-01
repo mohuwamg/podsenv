@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+# Podsenv Exec Command
+# 在指定版本环境中执行命令
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 选项
+VERBOSE=false
+DRY_RUN=false
+VERSION=""
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --version)
+        if [ $# -lt 2 ]; then
+          podsenv_error "--version requires a version argument"
+        fi
+        VERSION="$2"
+        shift 2
+        ;;
+      --dry-run)
+        DRY_RUN=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help exec
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        podsenv_error "Unknown option: $1"
+        ;;
+      *)
+        # 剩余参数是要执行的命令
+        break
+        ;;
+    esac
+  done
+  
+  # 检查是否提供了命令
+  if [ $# -eq 0 ]; then
+    podsenv_error "No command specified"
+  fi
+  
+  # 保存要执行的命令
+  EXEC_COMMAND=("$@")
+}
+
+# 获取执行版本
+get_exec_version() {
+  local version
+  
+  if [ -n "$VERSION" ]; then
+    # 使用指定版本
+    version="$VERSION"
+  else
+    # 使用当前检测到的版本
+    version="$(podsenv_detect_version 2>/dev/null || echo "")"
+  fi
+  
+  if [ -z "$version" ]; then
+    podsenv_error "No CocoaPods version specified. Use --version or set a version with 'podsenv global/local'."
+  fi
+  
+  echo "$version"
+}
+
+# 验证版本和命令
+validate_exec_environment() {
+  local version="$1"
+  local command="$2"
+  local resolved_version
+  local command_path
+  
+  # 验证版本格式
+  if ! podsenv_version_valid "$version"; then
+    podsenv_error "Invalid version format: $version"
+  fi
+  
+  # 解析别名
+  resolved_version="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+  
+  # 检查版本是否可用
+  if ! podsenv_version_available "$resolved_version"; then
+    if [ "$resolved_version" = "system" ]; then
+      podsenv_error "System CocoaPods not found. Install CocoaPods system-wide first."
+    else
+      podsenv_error "CocoaPods $resolved_version is not installed. Run 'podsenv install $resolved_version' first."
+    fi
+  fi
+  
+  # 检查命令是否存在
+  if [ "$resolved_version" = "system" ]; then
+    # 系统版本：在 PATH 中查找（排除 shims 目录）
+    local path_without_shims
+    path_without_shims="$(echo "$PATH" | tr ':' '\n' | grep -v "$PODSENV_SHIMS_DIR" | tr '\n' ':' | sed 's/:$//')"
+    
+    command_path="$(PATH="$path_without_shims" command -v "$command" 2>/dev/null || echo "")"
+  else
+    # 特定版本：在版本的 bin 目录中查找
+    local bin_dir
+    bin_dir="$(podsenv_gem_bin_dir "$resolved_version")"
+    command_path="${bin_dir}/${command}"
+    
+    if [ ! -x "$command_path" ]; then
+      command_path=""
+    fi
+  fi
+  
+  if [ -z "$command_path" ]; then
+    if [ "$resolved_version" = "system" ]; then
+      podsenv_error "$command: command not found in system"
+    else
+      podsenv_error "$command: command not found in CocoaPods $resolved_version"
+    fi
+  fi
+  
+  echo "$resolved_version" "$command_path"
+}
+
+# 设置执行环境
+setup_exec_environment() {
+  local version="$1"
+  
+  if [ "$version" = "system" ]; then
+    # 系统版本：清除 podsenv 相关环境变量
+    unset GEM_HOME GEM_PATH PODSENV_VERSION 2>/dev/null || true
+    
+    # 从 PATH 中移除 shims 目录
+    PATH="$(echo "$PATH" | tr ':' '\n' | grep -v "$PODSENV_SHIMS_DIR" | tr '\n' ':' | sed 's/:$//')"
+    export PATH
+  else
+    # 特定版本：设置版本环境
+    podsenv_set_version_env "$version"
+    
+    # 从 PATH 中移除 shims 目录，避免递归调用
+    PATH="$(echo "$PATH" | tr ':' '\n' | grep -v "$PODSENV_SHIMS_DIR" | tr '\n' ':' | sed 's/:$//')"
+    
+    # 添加版本的 bin 目录到 PATH 前面
+    local bin_dir
+    bin_dir="$(podsenv_gem_bin_dir "$version")"
+    PATH="${bin_dir}:${PATH}"
+    export PATH
+  fi
+}
+
+# 显示执行信息
+show_exec_info() {
+  local version="$1"
+  local command_path="$2"
+  local command_args=("${@:3}")
+  
+  if [ "$VERBOSE" = "false" ] && [ "$DRY_RUN" = "false" ]; then
+    return
+  fi
+  
+  echo "Execution details:" >&2
+  echo "  Version: $version" >&2
+  echo "  Command: $command_path" >&2
+  
+  if [ ${#command_args[@]} -gt 0 ]; then
+    echo "  Arguments: ${command_args[*]}" >&2
+  fi
+  
+  if [ "$version" != "system" ]; then
+    local version_dir
+    version_dir="$(podsenv_version_dir "$version")"
+    echo "  Version directory: $version_dir" >&2
+    
+    local gem_home
+    gem_home="$(podsenv_gem_home "$version")"
+    echo "  GEM_HOME: $gem_home" >&2
+  fi
+  
+  # 显示版本来源
+  if [ -z "$VERSION" ]; then
+    local version_source
+    version_source="$(podsenv_version_source "$version" 2>/dev/null || echo "unknown")"
+    echo "  Version source: $version_source" >&2
+  else
+    echo "  Version source: command line (--version)" >&2
+  fi
+  
+  echo >&2
+}
+
+# 显示环境变量
+show_environment() {
+  if [ "$VERBOSE" = "false" ]; then
+    return
+  fi
+  
+  echo "Environment variables:" >&2
+  echo "  PATH=${PATH}" >&2
+  echo "  GEM_HOME=${GEM_HOME:-"(unset)"}" >&2
+  echo "  GEM_PATH=${GEM_PATH:-"(unset)"}" >&2
+  echo "  PODSENV_VERSION=${PODSENV_VERSION:-"(unset)"}" >&2
+  echo >&2
+}
+
+# 执行命令
+execute_command() {
+  local command_path="$1"
+  shift
+  local command_args=("$@")
+  
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "Would execute: $command_path ${command_args[*]}" >&2
+    return 0
+  fi
+  
+  # 执行命令
+  exec "$command_path" "${command_args[@]}"
+}
+
+# 处理执行错误
+handle_exec_error() {
+  local exit_code=$1
+  local version="$2"
+  local command="$3"
+  
+  case $exit_code in
+    126)
+      podsenv_error "$command: permission denied in CocoaPods $version"
+      ;;
+    127)
+      podsenv_error "$command: command not found in CocoaPods $version"
+      ;;
+    *)
+      podsenv_error "$command: execution failed with exit code $exit_code"
+      ;;
+  esac
+}
+
+# 显示可用命令
+show_available_commands() {
+  local version="$1"
+  
+  if [ "$VERBOSE" = "false" ]; then
+    return
+  fi
+  
+  echo "Available commands in $version:" >&2
+  
+  if [ "$version" = "system" ]; then
+    echo "  (system commands in PATH)" >&2
+  else
+    local bin_dir
+    bin_dir="$(podsenv_gem_bin_dir "$version")"
+    
+    if [ -d "$bin_dir" ]; then
+      find "$bin_dir" -type f -executable -exec basename {} \; 2>/dev/null | sort | sed 's/^/  /' >&2 || true
+    else
+      echo "  (no commands found)" >&2
+    fi
+  fi
+  
+  echo >&2
+}
+
+# 主函数
+main() {
+  local EXEC_COMMAND=()
+  
+  # 解析参数
+  parse_args "$@"
+  
+  # 获取执行版本
+  local exec_version
+  exec_version="$(get_exec_version)"
+  
+  # 获取要执行的命令
+  local command="${EXEC_COMMAND[0]}"
+  local command_args=("${EXEC_COMMAND[@]:1}")
+  
+  # 验证版本和命令
+  local validation_result
+  validation_result="$(validate_exec_environment "$exec_version" "$command")"
+  
+  local resolved_version command_path
+  resolved_version="$(echo "$validation_result" | cut -d' ' -f1)"
+  command_path="$(echo "$validation_result" | cut -d' ' -f2-)"
+  
+  # 显示执行信息
+  show_exec_info "$resolved_version" "$command_path" "${command_args[@]}"
+  
+  # 设置执行环境
+  setup_exec_environment "$resolved_version"
+  
+  # 显示环境变量
+  show_environment
+  
+  # 执行命令
+  execute_command "$command_path" "${command_args[@]}" || {
+    local exit_code=$?
+    show_available_commands "$resolved_version"
+    handle_exec_error $exit_code "$resolved_version" "$command"
+  }
+}
+
+# 执行主函数
+main "$@"

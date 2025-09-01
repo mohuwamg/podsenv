@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# Podsenv Init Command
+# 输出 shell 初始化代码
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+
+# 检测 shell 类型
+detect_shell() {
+  local shell="${1:-}"
+  
+  if [ -n "$shell" ]; then
+    echo "$shell"
+    return
+  fi
+  
+  # 从环境变量检测
+  if [ -n "${SHELL:-}" ]; then
+    basename "$SHELL"
+    return
+  fi
+  
+  # 默认为 bash
+  echo "bash"
+}
+
+# 输出通用初始化代码
+output_common_init() {
+  cat << EOF
+# Podsenv initialization
+export PODSENV_ROOT="$PODSENV_ROOT"
+export PATH="$PODSENV_SHIMS_DIR:\$PATH"
+EOF
+}
+
+# 输出 bash/zsh 初始化代码
+output_bash_zsh_init() {
+  output_common_init
+  
+  cat << 'EOF'
+
+# Podsenv function
+podsenv() {
+  local command="$1"
+  if [ "$#" -gt 0 ]; then
+    shift
+  fi
+
+  case "$command" in
+    rehash|shell)
+      eval "$("$PODSENV_ROOT/bin/podsenv" "$command" "$@")"
+      ;;
+    *)
+      command podsenv "$command" "$@"
+      ;;
+  esac
+}
+EOF
+}
+
+# 输出 fish 初始化代码
+output_fish_init() {
+  cat << EOF
+# Podsenv initialization for fish
+set -gx PODSENV_ROOT "$PODSENV_ROOT"
+set -gx PATH "$PODSENV_SHIMS_DIR" \$PATH
+EOF
+  
+  cat << 'EOF'
+
+# Podsenv function for fish
+function podsenv
+  set command $argv[1]
+  set -e argv[1]
+
+  switch "$command"
+    case rehash shell
+      source (podsenv "$command" $argv | psub)
+    case '*'
+      command podsenv "$command" $argv
+  end
+end
+EOF
+}
+
+# 输出自动补全设置
+output_completion_setup() {
+  local shell="$1"
+  local completion_file="${PODSENV_ROOT}/completions/podsenv.${shell}"
+  
+  if [ -f "$completion_file" ]; then
+    case "$shell" in
+      "bash")
+        echo "source \"$completion_file\""
+        ;;
+      "zsh")
+        echo "source \"$completion_file\""
+        ;;
+      "fish")
+        echo "source \"$completion_file\""
+        ;;
+    esac
+  fi
+}
+
+# 输出环境检查代码
+output_env_check() {
+  cat << 'EOF'
+
+# Check podsenv installation
+if [ ! -d "$PODSENV_ROOT" ]; then
+  echo "podsenv: warning: PODSENV_ROOT directory not found: $PODSENV_ROOT" >&2
+fi
+EOF
+}
+
+# 输出调试信息
+output_debug_info() {
+  if [ "${PODSENV_DEBUG:-}" != "1" ]; then
+    return
+  fi
+  
+  cat << EOF
+
+# Debug information
+echo "podsenv: debug: initialized for shell: $1" >&2
+echo "podsenv: debug: PODSENV_ROOT=$PODSENV_ROOT" >&2
+echo "podsenv: debug: shims directory: $PODSENV_SHIMS_DIR" >&2
+EOF
+}
+
+# 输出版本检查和自动切换代码
+output_version_features() {
+  cat << 'EOF'
+
+# Load podsenv version detection
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# Auto-switch versions when changing directories (if enabled)
+if [ "${PODSENV_AUTO_SWITCH:-1}" = "1" ]; then
+  _podsenv_auto_switch() {
+    podsenv_auto_switch 2>/dev/null || true
+  }
+  
+  # Hook into cd command for different shells
+  if [ -n "${BASH_VERSION:-}" ]; then
+    _podsenv_cd() {
+      \cd "$@"
+      _podsenv_auto_switch
+    }
+    alias cd='_podsenv_cd'
+  elif [ -n "${ZSH_VERSION:-}" ]; then
+    # Add to chpwd_functions array if it exists, otherwise create it
+    if ! typeset -p chpwd_functions >/dev/null 2>&1; then
+      typeset -ga chpwd_functions
+    fi
+    chpwd_functions+=(_podsenv_auto_switch)
+  fi
+fi
+
+# Auto-install missing versions (if enabled)
+if [ "${PODSENV_AUTO_INSTALL:-false}" = "true" ]; then
+  _podsenv_auto_install() {
+    local version
+    version="$(podsenv_detect_version 2>/dev/null || echo "")"
+    
+    if [ -n "$version" ] && [ "$version" != "system" ]; then
+      if ! podsenv_version_exists "$version"; then
+        echo "podsenv: auto-installing $version..." >&2
+        podsenv install "$version"
+      fi
+    fi
+  }
+  
+  # Hook into cd command for auto-install
+  if [ -n "${BASH_VERSION:-}" ]; then
+    _podsenv_cd_with_install() {
+      \cd "$@"
+      _podsenv_auto_switch
+      _podsenv_auto_install
+    }
+    alias cd='_podsenv_cd_with_install'
+  elif [ -n "${ZSH_VERSION:-}" ]; then
+    chpwd_functions+=(_podsenv_auto_install)
+  fi
+fi
+EOF
+}
+
+# 显示安装说明
+show_install_instructions() {
+  local shell="$1"
+  
+  echo "# Add this to your shell profile:" >&2
+  echo >&2
+  
+  case "$shell" in
+    "bash")
+      echo "# For ~/.bashrc or ~/.bash_profile:" >&2
+      echo "eval \"\$(podsenv init -)\"" >&2
+      ;;
+    "zsh")
+      echo "# For ~/.zshrc:" >&2
+      echo "eval \"\$(podsenv init -)\"" >&2
+      ;;
+    "fish")
+      echo "# For ~/.config/fish/config.fish:" >&2
+      echo "podsenv init - | source" >&2
+      ;;
+    *)
+      echo "# For your shell profile:" >&2
+      echo "eval \"\$(podsenv init -)\"" >&2
+      ;;
+  esac
+  
+  echo >&2
+  echo "# Then restart your shell or run:" >&2
+  echo "source ~/.${shell}rc" >&2
+}
+
+# 主函数
+main() {
+  local shell
+  local show_instructions=false
+  
+  # 解析参数
+  case "${1:-}" in
+    "-")
+      # 输出初始化代码
+      ;;
+    "--help" | "-h")
+      exec "${PODSENV_ROOT}/bin/podsenv" help init
+      ;;
+    "--instructions")
+      show_instructions=true
+      shift
+      ;;
+    "")
+      show_instructions=true
+      ;;
+    *)
+      shell="$1"
+      ;;
+  esac
+  
+  # 检测 shell
+  shell="$(detect_shell "${shell:-}")"
+  
+  # 显示安装说明
+  if [ "$show_instructions" = "true" ]; then
+    show_install_instructions "$shell"
+    return
+  fi
+  
+  # 输出初始化代码
+  case "$shell" in
+    "bash" | "zsh")
+      output_bash_zsh_init
+      ;;
+    "fish")
+      output_fish_init
+      ;;
+    *)
+      podsenv_log "warn" "Unsupported shell: $shell, using bash compatibility mode" >&2
+      output_bash_zsh_init
+      ;;
+  esac
+  
+  # 输出自动补全设置
+  output_completion_setup "$shell"
+  
+  # 输出环境检查
+  output_env_check
+  
+  # 输出版本功能 (自动切换和自动安装)
+  output_version_features
+  
+  # 输出调试信息
+  output_debug_info "$shell"
+}
+
+# 执行主函数
+main "$@"

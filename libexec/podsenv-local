@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+# Podsenv Local Command
+# 管理项目级别的 CocoaPods 版本
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 常量
+LOCAL_VERSION_FILE=".podsenv-version"
+
+# 选项
+UNSET=false
+VERBOSE=false
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --unset)
+        UNSET=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help local
+        ;;
+      -*)
+        podsenv_error "Unknown option: $1"
+        ;;
+      *)
+        # 版本参数
+        if [ -n "${VERSION:-}" ]; then
+          podsenv_error "Multiple versions specified: $VERSION and $1"
+        fi
+        VERSION="$1"
+        shift
+        ;;
+    esac
+  done
+}
+
+# 获取当前本地版本
+get_current_local_version() {
+  if [ -f "$LOCAL_VERSION_FILE" ]; then
+    cat "$LOCAL_VERSION_FILE"
+  else
+    echo ""
+  fi
+}
+
+# 显示当前本地版本
+show_current_local_version() {
+  local current_version
+  current_version="$(get_current_local_version)"
+  
+  if [ -n "$current_version" ]; then
+    # 解析别名
+    local resolved_version
+    resolved_version="$(podsenv_resolve_alias "$current_version" 2>/dev/null || echo "$current_version")"
+    
+    if [ "$current_version" != "$resolved_version" ]; then
+      echo "$current_version -> $resolved_version"
+    else
+      echo "$current_version"
+    fi
+    
+    # 显示详细信息
+    if [ "$VERBOSE" = "true" ]; then
+      echo
+      echo "Local version file: $(pwd)/$LOCAL_VERSION_FILE"
+      
+      if [ "$resolved_version" != "system" ]; then
+        local version_dir
+        version_dir="$(podsenv_version_dir "$resolved_version")"
+        
+        if [ -d "$version_dir" ]; then
+          echo "Version directory: $version_dir"
+          echo "Status: installed"
+        else
+          echo "Status: not installed"
+        fi
+      else
+        echo "Status: system version"
+      fi
+    fi
+  else
+    echo "No local version set"
+    
+    if [ "$VERBOSE" = "true" ]; then
+      echo
+      echo "To set a local version, run:"
+      echo "  podsenv local <version>"
+      echo
+      echo "Available versions:"
+      podsenv_installed_versions | sed 's/^/  /'
+    fi
+  fi
+}
+
+# 设置本地版本
+set_local_version() {
+  local version="$1"
+  local resolved_version
+  
+  # 验证版本格式
+  if ! podsenv_version_valid "$version"; then
+    podsenv_error "Invalid version format: $version"
+  fi
+  
+  # 解析别名
+  resolved_version="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+  
+  # 检查版本是否可用
+  if ! podsenv_version_available "$resolved_version"; then
+    if [ "$resolved_version" = "system" ]; then
+      podsenv_error "System CocoaPods not found. Install CocoaPods system-wide first."
+    else
+      podsenv_error "CocoaPods $resolved_version is not installed. Run 'podsenv install $resolved_version' first."
+    fi
+  fi
+  
+  # 写入版本文件
+  echo "$version" > "$LOCAL_VERSION_FILE"
+  
+  podsenv_log "success" "Local version set to $version"
+  
+  if [ "$version" != "$resolved_version" ]; then
+    echo "Resolved to: $resolved_version"
+  fi
+  
+  # 显示详细信息
+  if [ "$VERBOSE" = "true" ]; then
+    echo
+    echo "Version file: $(pwd)/$LOCAL_VERSION_FILE"
+    
+    if [ "$resolved_version" != "system" ]; then
+      local version_dir
+      version_dir="$(podsenv_version_dir "$resolved_version")"
+      echo "Version directory: $version_dir"
+    fi
+    
+    echo
+    echo "This version will be used in this directory and its subdirectories."
+    echo "To use this version globally, run:"
+    echo "  podsenv global $version"
+  fi
+}
+
+# 取消设置本地版本
+unset_local_version() {
+  if [ ! -f "$LOCAL_VERSION_FILE" ]; then
+    podsenv_log "warn" "No local version file found"
+    return
+  fi
+  
+  local current_version
+  current_version="$(get_current_local_version)"
+  
+  rm -f "$LOCAL_VERSION_FILE"
+  
+  podsenv_log "success" "Local version unset (was: $current_version)"
+  
+  if [ "$VERBOSE" = "true" ]; then
+    echo
+    echo "Removed: $(pwd)/$LOCAL_VERSION_FILE"
+    echo
+    echo "The global version will now be used in this directory."
+    
+    local global_version
+    global_version="$(podsenv_get_global_version 2>/dev/null || echo "")"
+    
+    if [ -n "$global_version" ]; then
+      echo "Global version: $global_version"
+    else
+      echo "No global version set. Run 'podsenv global <version>' to set one."
+    fi
+  fi
+}
+
+# 验证本地版本
+validate_local_version() {
+  local current_version
+  current_version="$(get_current_local_version)"
+  
+  if [ -z "$current_version" ]; then
+    return
+  fi
+  
+  local resolved_version
+  resolved_version="$(podsenv_resolve_alias "$current_version" 2>/dev/null || echo "$current_version")"
+  
+  if ! podsenv_version_available "$resolved_version"; then
+    podsenv_log "warn" "Local version $current_version is not available"
+    
+    if [ "$resolved_version" != "system" ]; then
+      echo "Run 'podsenv install $resolved_version' to install it"
+    else
+      echo "Install CocoaPods system-wide or choose a different version"
+    fi
+    
+    return 1
+  fi
+  
+  return 0
+}
+
+# 查找版本文件
+find_version_files() {
+  local dir="$(pwd)"
+  local files=()
+  
+  # 向上查找版本文件
+  while [ "$dir" != "/" ]; do
+    if [ -f "${dir}/${LOCAL_VERSION_FILE}" ]; then
+      files+=("${dir}/${LOCAL_VERSION_FILE}")
+    fi
+    dir="$(dirname "$dir")"
+  done
+  
+  if [ ${#files[@]} -gt 0 ]; then
+    printf '%s\n' "${files[@]}"
+  fi
+}
+
+# 显示版本文件信息
+show_version_files_info() {
+  local files
+  files="$(find_version_files)"
+  
+  if [ -z "$files" ]; then
+    echo "No .podsenv-version files found in current directory tree"
+    return
+  fi
+  
+  echo "Found .podsenv-version files:"
+  echo
+  
+  while IFS= read -r file; do
+    local version
+    local dir
+    local resolved_version
+    local status
+    
+    version="$(cat "$file")"
+    dir="$(dirname "$file")"
+    resolved_version="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+    
+    if podsenv_version_available "$resolved_version"; then
+      status="✓ installed"
+    else
+      status="✗ not installed"
+    fi
+    
+    echo "  $dir"
+    echo "    Version: $version"
+    
+    if [ "$version" != "$resolved_version" ]; then
+      echo "    Resolved: $resolved_version"
+    fi
+    
+    echo "    Status: $status"
+    echo
+  done <<< "$files"
+}
+
+# 主函数
+main() {
+  local VERSION=""
+  
+  # 解析参数
+  parse_args "$@"
+  
+  # 处理不同情况
+  if [ "$UNSET" = "true" ]; then
+    # 取消设置本地版本
+    unset_local_version
+  elif [ -n "$VERSION" ]; then
+    # 设置本地版本
+    set_local_version "$VERSION"
+  else
+    # 显示当前本地版本
+    show_current_local_version
+    
+    # 显示版本文件信息（详细模式）
+    if [ "$VERBOSE" = "true" ]; then
+      echo
+      show_version_files_info
+    fi
+  fi
+  
+  # 验证当前设置
+  if [ "$UNSET" = "false" ] && [ -z "$VERSION" ]; then
+    validate_local_version || true
+  fi
+}
+
+# 执行主函数
+main "$@"

@@ -1,0 +1,493 @@
+#!/usr/bin/env bash
+# Podsenv Doctor Command
+# 诊断 podsenv 环境和配置问题
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 选项
+VERBOSE=false
+FIX_ISSUES=false
+QUIET=false
+
+# 诊断结果统计
+CHECKS_PASSED=0
+CHECKS_FAILED=0
+CHECKS_WARNING=0
+ISSUES_FOUND=()
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --fix)
+        FIX_ISSUES=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      -q|--quiet)
+        QUIET=true
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help doctor
+        ;;
+      -*)
+        podsenv_error "Unknown option: $1"
+        ;;
+      *)
+        podsenv_error "Unexpected argument: $1"
+        ;;
+    esac
+  done
+}
+
+# 输出函数
+log_check() {
+  local status="$1"
+  local message="$2"
+  local details="${3:-}"
+  
+  if [ "$QUIET" = "true" ] && [ "$status" = "PASS" ]; then
+    return
+  fi
+  
+  case "$status" in
+    "PASS")
+      echo "✓ $message"
+      CHECKS_PASSED=$((CHECKS_PASSED + 1))
+      ;;
+    "FAIL")
+      echo "✗ $message"
+      CHECKS_FAILED=$((CHECKS_FAILED + 1))
+      ISSUES_FOUND+=("$message")
+      ;;
+    "WARN")
+      echo "⚠ $message"
+      CHECKS_WARNING=$((CHECKS_WARNING + 1))
+      ;;
+  esac
+  
+  if [ -n "$details" ] && [ "$VERBOSE" = "true" ]; then
+    echo "  $details"
+  fi
+}
+
+# 检查 podsenv 安装
+check_podsenv_installation() {
+  echo "Checking podsenv installation..."
+  echo
+  
+  # 检查 PODSENV_ROOT
+  if [ -d "$PODSENV_ROOT" ]; then
+    log_check "PASS" "PODSENV_ROOT directory exists" "$PODSENV_ROOT"
+  else
+    log_check "FAIL" "PODSENV_ROOT directory not found" "$PODSENV_ROOT"
+    return
+  fi
+  
+  # 检查核心目录
+  local required_dirs=("bin" "libexec" "lib" "versions" "shims")
+  for dir in "${required_dirs[@]}"; do
+    local dir_path="${PODSENV_ROOT}/${dir}"
+    if [ -d "$dir_path" ]; then
+      log_check "PASS" "Directory $dir exists" "$dir_path"
+    else
+      log_check "FAIL" "Directory $dir missing" "$dir_path"
+      
+      if [ "$FIX_ISSUES" = "true" ]; then
+        mkdir -p "$dir_path"
+        log_check "PASS" "Created directory $dir" "$dir_path"
+      fi
+    fi
+  done
+  
+  # 检查核心文件
+  local required_files=(
+    "bin/podsenv"
+    "lib/podsenv-core.sh"
+    "lib/podsenv-version.sh"
+  )
+  
+  for file in "${required_files[@]}"; do
+    local file_path="${PODSENV_ROOT}/${file}"
+    if [ -f "$file_path" ]; then
+      if [ -x "$file_path" ] || [[ "$file" == *.sh ]]; then
+        log_check "PASS" "File $file exists and is accessible" "$file_path"
+      else
+        log_check "WARN" "File $file exists but may not be executable" "$file_path"
+      fi
+    else
+      log_check "FAIL" "File $file missing" "$file_path"
+    fi
+  done
+  
+  echo
+}
+
+# 检查 PATH 配置
+check_path_configuration() {
+  echo "Checking PATH configuration..."
+  echo
+  
+  # 检查 podsenv 是否在 PATH 中
+  if command -v podsenv >/dev/null 2>&1; then
+    local podsenv_path
+    podsenv_path="$(command -v podsenv)"
+    
+    if [[ "$podsenv_path" == "${PODSENV_ROOT}/bin/podsenv" ]]; then
+      log_check "PASS" "podsenv is in PATH and points to correct location" "$podsenv_path"
+    else
+      log_check "WARN" "podsenv found in PATH but points to different location" "Expected: ${PODSENV_ROOT}/bin/podsenv, Found: $podsenv_path"
+    fi
+  else
+    log_check "FAIL" "podsenv not found in PATH" "Add ${PODSENV_ROOT}/bin to your PATH"
+  fi
+  
+  # 检查 shims 目录是否在 PATH 中
+  local shims_dir="${PODSENV_ROOT}/shims"
+  if [[ ":$PATH:" == *":$shims_dir:"* ]]; then
+    log_check "PASS" "Shims directory is in PATH" "$shims_dir"
+  else
+    log_check "FAIL" "Shims directory not in PATH" "Add $shims_dir to your PATH or run 'eval \"\$(podsenv init)\""
+  fi
+  
+  echo
+}
+
+# 检查 shell 集成
+check_shell_integration() {
+  echo "Checking shell integration..."
+  echo
+  
+  # 检测当前 shell
+  local current_shell
+  current_shell="$(basename "${SHELL:-bash}")"
+  log_check "PASS" "Current shell detected" "$current_shell"
+  
+  # 检查 shell 配置文件
+  local shell_configs=()
+  case "$current_shell" in
+    "bash")
+      shell_configs=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile")
+      ;;
+    "zsh")
+      shell_configs=("$HOME/.zshrc" "$HOME/.zprofile")
+      ;;
+    "fish")
+      shell_configs=("$HOME/.config/fish/config.fish")
+      ;;
+    *)
+      log_check "WARN" "Unknown shell, manual configuration may be required" "$current_shell"
+      ;;
+  esac
+  
+  local init_found=false
+  for config in "${shell_configs[@]}"; do
+    if [ -f "$config" ]; then
+      if grep -q "podsenv init" "$config" 2>/dev/null; then
+        log_check "PASS" "podsenv init found in shell config" "$config"
+        init_found=true
+        break
+      fi
+    fi
+  done
+  
+  if [ "$init_found" = "false" ]; then
+    log_check "WARN" "podsenv init not found in shell configuration" "Run 'podsenv init' for setup instructions"
+  fi
+  
+  # 检查环境变量
+  if [ -n "${PODSENV_VERSION:-}" ]; then
+    log_check "PASS" "PODSENV_VERSION environment variable set" "$PODSENV_VERSION"
+  else
+    log_check "PASS" "PODSENV_VERSION not set (using file-based detection)" ""
+  fi
+  
+  echo
+}
+
+# 检查版本管理
+check_version_management() {
+  echo "Checking version management..."
+  echo
+  
+  # 检查已安装的版本
+  local installed_versions
+  installed_versions="$(podsenv_installed_versions)"
+  
+  if [ -n "$installed_versions" ]; then
+    local version_count
+    version_count="$(echo "$installed_versions" | wc -l | xargs)"
+    log_check "PASS" "CocoaPods versions installed" "$version_count versions"
+    
+    if [ "$VERBOSE" = "true" ]; then
+      echo "  Installed versions:"
+      echo "$installed_versions" | sed 's/^/    /'
+    fi
+  else
+    log_check "WARN" "No CocoaPods versions installed" "Run 'podsenv install <version>' to install one"
+  fi
+  
+  # 检查当前版本
+  local current_version
+  current_version="$(podsenv_detect_version 2>/dev/null || echo "")"
+  
+  if [ -n "$current_version" ]; then
+    local version_source
+    version_source="$(podsenv_version_source "$current_version" 2>/dev/null || echo "unknown")"
+    log_check "PASS" "Current version detected" "$current_version (from $version_source)"
+    
+    # 检查当前版本是否已安装
+    local resolved_version
+    resolved_version="$(podsenv_resolve_alias "$current_version" 2>/dev/null || echo "$current_version")"
+    
+    if [ "$resolved_version" = "system" ]; then
+      if podsenv_command_exists "pod"; then
+        log_check "PASS" "System CocoaPods available" "$(pod --version 2>/dev/null || echo 'version unknown')"
+      else
+        log_check "FAIL" "System CocoaPods not found" "Install CocoaPods system-wide or use podsenv-managed version"
+      fi
+    else
+      if podsenv_version_installed "$resolved_version"; then
+        log_check "PASS" "Current version is installed" "$resolved_version"
+      else
+        log_check "FAIL" "Current version is not installed" "Run 'podsenv install $resolved_version'"
+      fi
+    fi
+  else
+    log_check "WARN" "No current version set" "Use 'podsenv global <version>' to set one"
+  fi
+  
+  # 检查版本文件
+  local global_version_file="${PODSENV_ROOT}/version"
+  if [ -f "$global_version_file" ]; then
+    local global_version
+    global_version="$(cat "$global_version_file" 2>/dev/null || echo "")"
+    if [ -n "$global_version" ]; then
+      log_check "PASS" "Global version file exists" "$global_version"
+    else
+      log_check "WARN" "Global version file is empty" "$global_version_file"
+    fi
+  else
+    log_check "PASS" "No global version file (using default behavior)" ""
+  fi
+  
+  # 检查本地版本文件
+  local local_version_file
+  local_version_file="$(podsenv_find_version_file 2>/dev/null || echo "")"
+  if [ -n "$local_version_file" ]; then
+    local local_version
+    local_version="$(cat "$local_version_file" 2>/dev/null || echo "")"
+    if [ -n "$local_version" ]; then
+      log_check "PASS" "Local version file found" "$local_version ($local_version_file)"
+    else
+      log_check "WARN" "Local version file is empty" "$local_version_file"
+    fi
+  fi
+  
+  echo
+}
+
+# 检查 shims
+check_shims() {
+  echo "Checking shims..."
+  echo
+  
+  local shims_dir="${PODSENV_ROOT}/shims"
+  
+  if [ -d "$shims_dir" ]; then
+    local shim_count
+    shim_count="$(find "$shims_dir" -type f -perm +111 | wc -l | xargs)"
+    
+    if [ "$shim_count" -gt 0 ]; then
+      log_check "PASS" "Shims directory contains executables" "$shim_count shims"
+      
+      # 检查 pod shim
+      local pod_shim="${shims_dir}/pod"
+      if [ -f "$pod_shim" ] && [ -x "$pod_shim" ]; then
+        log_check "PASS" "pod shim exists and is executable" "$pod_shim"
+      else
+        log_check "WARN" "pod shim missing or not executable" "Run 'podsenv rehash' to rebuild shims"
+      fi
+      
+      if [ "$VERBOSE" = "true" ]; then
+        echo "  Available shims:"
+        find "$shims_dir" -type f -perm +111 -exec basename {} \; | sort | sed 's/^/    /'
+      fi
+    else
+      log_check "WARN" "Shims directory is empty" "Run 'podsenv rehash' to create shims"
+    fi
+  else
+    log_check "FAIL" "Shims directory missing" "$shims_dir"
+  fi
+  
+  echo
+}
+
+# 检查权限
+check_permissions() {
+  echo "Checking permissions..."
+  echo
+  
+  # 检查 PODSENV_ROOT 权限
+  if [ -w "$PODSENV_ROOT" ]; then
+    log_check "PASS" "PODSENV_ROOT is writable" "$PODSENV_ROOT"
+  else
+    log_check "FAIL" "PODSENV_ROOT is not writable" "Check directory permissions"
+  fi
+  
+  # 检查版本目录权限
+  local versions_dir="${PODSENV_ROOT}/versions"
+  if [ -d "$versions_dir" ]; then
+    if [ -w "$versions_dir" ]; then
+      log_check "PASS" "Versions directory is writable" "$versions_dir"
+    else
+      log_check "FAIL" "Versions directory is not writable" "Cannot install new versions"
+    fi
+  fi
+  
+  # 检查 shims 目录权限
+  local shims_dir="${PODSENV_ROOT}/shims"
+  if [ -d "$shims_dir" ]; then
+    if [ -w "$shims_dir" ]; then
+      log_check "PASS" "Shims directory is writable" "$shims_dir"
+    else
+      log_check "FAIL" "Shims directory is not writable" "Cannot update shims"
+    fi
+  fi
+  
+  echo
+}
+
+# 检查网络连接
+check_network_connectivity() {
+  echo "Checking network connectivity..."
+  echo
+  
+  # 检查 RubyGems API 连接
+  if command -v curl >/dev/null 2>&1; then
+    if curl -s --connect-timeout 10 "https://rubygems.org/api/v1/gems/cocoapods.json" >/dev/null 2>&1; then
+      log_check "PASS" "RubyGems API is accessible" "https://rubygems.org"
+    else
+      log_check "WARN" "Cannot connect to RubyGems API" "Network issues may affect version fetching"
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if wget -q --timeout=10 --spider "https://rubygems.org/api/v1/gems/cocoapods.json" 2>/dev/null; then
+      log_check "PASS" "RubyGems API is accessible" "https://rubygems.org"
+    else
+      log_check "WARN" "Cannot connect to RubyGems API" "Network issues may affect version fetching"
+    fi
+  else
+    log_check "WARN" "No HTTP client available" "Install curl or wget for network checks"
+  fi
+  
+  echo
+}
+
+# 检查依赖
+check_dependencies() {
+  echo "Checking dependencies..."
+  echo
+  
+  # 检查必需的命令
+  local required_commands=("ruby" "gem")
+  for cmd in "${required_commands[@]}"; do
+    if podsenv_command_exists "$cmd"; then
+      local version
+      case "$cmd" in
+        "ruby")
+          version="$(ruby --version 2>/dev/null | cut -d' ' -f2 || echo 'unknown')"
+          ;;
+        "gem")
+          version="$(gem --version 2>/dev/null || echo 'unknown')"
+          ;;
+        *)
+          version="available"
+          ;;
+      esac
+      log_check "PASS" "$cmd is available" "version $version"
+    else
+      log_check "FAIL" "$cmd is not available" "Required for CocoaPods installation"
+    fi
+  done
+  
+  # 检查可选的命令
+  local optional_commands=("curl" "wget" "git")
+  for cmd in "${optional_commands[@]}"; do
+    if podsenv_command_exists "$cmd"; then
+      log_check "PASS" "$cmd is available" "optional but recommended"
+    else
+      log_check "WARN" "$cmd is not available" "recommended for full functionality"
+    fi
+  done
+  
+  echo
+}
+
+# 显示诊断摘要
+show_summary() {
+  echo "Diagnosis Summary:"
+  echo "================="
+  echo "✓ Checks passed: $CHECKS_PASSED"
+  echo "⚠ Warnings: $CHECKS_WARNING"
+  echo "✗ Checks failed: $CHECKS_FAILED"
+  echo
+  
+  if [ "$CHECKS_FAILED" -gt 0 ]; then
+    echo "Issues found:"
+    for issue in "${ISSUES_FOUND[@]}"; do
+      echo "  - $issue"
+    done
+    echo
+    
+    if [ "$FIX_ISSUES" = "false" ]; then
+      echo "Run 'podsenv doctor --fix' to attempt automatic fixes."
+    fi
+    
+    return 1
+  elif [ "$CHECKS_WARNING" -gt 0 ]; then
+    echo "Some warnings were found, but podsenv should work correctly."
+    return 0
+  else
+    echo "All checks passed! podsenv is properly configured."
+    return 0
+  fi
+}
+
+# 主函数
+main() {
+  # 解析参数
+  parse_args "$@"
+  
+  if [ "$QUIET" = "false" ]; then
+    echo "Podsenv Doctor - Diagnosing your podsenv installation"
+    echo "===================================================="
+    echo
+  fi
+  
+  # 执行各项检查
+  check_podsenv_installation
+  check_path_configuration
+  check_shell_integration
+  check_version_management
+  check_shims
+  check_permissions
+  check_network_connectivity
+  check_dependencies
+  
+  # 显示摘要
+  show_summary
+}
+
+# 执行主函数
+main "$@"

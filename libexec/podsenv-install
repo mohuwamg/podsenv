@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+# Podsenv Install Command
+# 安装指定版本的 CocoaPods
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 安装选项
+FORCE_INSTALL=false
+VERBOSE=false
+SKIP_DOCS=true
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -f|--force)
+        FORCE_INSTALL=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      --with-docs)
+        SKIP_DOCS=false
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help install
+        ;;
+      -*)
+        podsenv_error_usage "install" "unknown option: $1"
+        ;;
+      *)
+        if [ -z "${VERSION:-}" ]; then
+          VERSION="$1"
+        else
+          podsenv_error_usage "install" "too many arguments: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+  
+  if [ -z "${VERSION:-}" ]; then
+    podsenv_error_usage "install" "version argument is required"
+  fi
+}
+
+# 验证版本
+validate_version() {
+  local version="$1"
+  
+  # 解析版本别名
+  version="$(podsenv_resolve_version_alias "$version")"
+  
+  # 验证版本格式
+  if ! podsenv_version_valid "$version"; then
+    podsenv_error_version_not_found "$version"
+  fi
+  
+  echo "$version"
+}
+
+# 检查版本是否已安装
+check_existing_installation() {
+  local version="$1"
+  
+  if podsenv_version_installed "$version"; then
+    if [ "$FORCE_INSTALL" = "true" ]; then
+      podsenv_log "warn" "Version $version is already installed, reinstalling due to --force flag"
+      return 0
+    else
+      podsenv_log "info" "CocoaPods $version is already installed"
+      podsenv_log "info" "Use --force to reinstall"
+      exit 0
+    fi
+  fi
+}
+
+# 创建版本目录结构
+setup_version_directories() {
+  local version="$1"
+  local version_dir
+  version_dir="$(podsenv_version_dir "$version")"
+  
+  # 如果强制安装，先删除现有目录
+  if [ "$FORCE_INSTALL" = "true" ] && [ -d "$version_dir" ]; then
+    podsenv_log "info" "Removing existing installation..."
+    rm -rf "$version_dir"
+  fi
+  
+  # 创建目录结构
+  podsenv_ensure_dir "$version_dir"
+  podsenv_ensure_dir "$(podsenv_gem_home "$version")"
+  podsenv_ensure_dir "$(podsenv_gem_bin_dir "$version")"
+  
+  podsenv_log "debug" "Created directories for version $version"
+}
+
+# 安装 CocoaPods
+install_cocoapods() {
+  local version="$1"
+  local version_dir
+  local gem_home
+  local gem_bin_dir
+  
+  version_dir="$(podsenv_version_dir "$version")"
+  gem_home="$(podsenv_gem_home "$version")"
+  gem_bin_dir="$(podsenv_gem_bin_dir "$version")"
+  
+  podsenv_log "info" "Installing CocoaPods $version..."
+  
+  # 设置环境变量
+  export GEM_HOME="$gem_home"
+  export GEM_PATH="$gem_home"
+  export PATH="$gem_bin_dir:$PATH"
+  
+  # 构建 gem install 命令
+  local gem_cmd=("gem" "install" "cocoapods")
+  gem_cmd+=("--version" "$version")
+  gem_cmd+=("--install-dir" "$gem_home")
+  gem_cmd+=("--bindir" "$gem_bin_dir")
+  
+  if [ "$SKIP_DOCS" = "true" ]; then
+    gem_cmd+=("--no-document")
+  fi
+  
+  if [ "$VERBOSE" = "true" ]; then
+    gem_cmd+=("--verbose")
+  else
+    gem_cmd+=("--quiet")
+  fi
+  
+  # 执行安装
+  podsenv_log "debug" "Running: ${gem_cmd[*]}"
+  
+  if [ "$VERBOSE" = "true" ]; then
+    "${gem_cmd[@]}" 2>&1 | tee -a "${PODSENV_LOGS_DIR}/install.log"
+  else
+    # 显示进度
+    {
+      "${gem_cmd[@]}" 2>&1 | tee -a "${PODSENV_LOGS_DIR}/install.log"
+    } &
+    
+    local install_pid=$!
+    local progress=0
+    
+    while kill -0 $install_pid 2>/dev/null; do
+      progress=$((progress + 1))
+      if [ $progress -gt 100 ]; then
+        progress=100
+      fi
+      podsenv_progress $progress 100 "Installing CocoaPods $version..."
+      sleep 1
+    done
+    
+    wait $install_pid
+    local exit_code=$?
+    
+    podsenv_progress 100 100 "Installation complete"
+    
+    if [ $exit_code -ne 0 ]; then
+      podsenv_error "Failed to install CocoaPods $version (exit code: $exit_code)"
+    fi
+  fi
+  
+  # 验证安装
+  if [ ! -x "$gem_bin_dir/pod" ]; then
+    podsenv_error "Installation failed: pod executable not found in $gem_bin_dir"
+  fi
+  
+  podsenv_log "success" "Successfully installed CocoaPods $version"
+}
+
+# 安装依赖 gems
+install_dependencies() {
+  local version="$1"
+  local gem_home
+  local gem_bin_dir
+  
+  gem_home="$(podsenv_gem_home "$version")"
+  gem_bin_dir="$(podsenv_gem_bin_dir "$version")"
+  
+  # 设置环境变量
+  export GEM_HOME="$gem_home"
+  export GEM_PATH="$gem_home"
+  export PATH="$gem_bin_dir:$PATH"
+  
+  podsenv_log "info" "Installing common dependencies..."
+  
+  # 安装常用的依赖 gems
+  local deps=("bundler" "rake")
+  
+  for dep in "${deps[@]}"; do
+    if [ "$VERBOSE" = "true" ]; then
+      podsenv_log "info" "Installing $dep..."
+      gem install "$dep" --no-document --quiet
+    else
+      gem install "$dep" --no-document --quiet >/dev/null 2>&1 || true
+    fi
+  done
+  
+  podsenv_log "debug" "Dependencies installed"
+}
+
+# 更新 shims
+update_shims() {
+  podsenv_log "info" "Updating shims..."
+  "${PODSENV_ROOT}/libexec/podsenv-rehash"
+}
+
+# 显示安装后信息
+show_post_install_info() {
+  local version="$1"
+  
+  echo
+  podsenv_log "success" "CocoaPods $version installed successfully!"
+  echo
+  echo "To use this version:"
+  echo "  podsenv global $version    # Set as global default"
+  echo "  podsenv local $version     # Set for current project"
+  echo "  podsenv shell $version     # Set for current shell"
+  echo
+  echo "To verify installation:"
+  echo "  podsenv exec $version pod --version"
+  echo
+}
+
+# 主函数
+main() {
+  local version
+  
+  # 解析参数
+  parse_args "$@"
+  
+  # 验证和解析版本
+  version="$(validate_version "$VERSION")"
+  
+  # 检查现有安装
+  check_existing_installation "$version"
+  
+  # 设置目录
+  setup_version_directories "$version"
+  
+  # 安装 CocoaPods
+  install_cocoapods "$version"
+  
+  # 安装依赖
+  install_dependencies "$version"
+  
+  # 更新 shims
+  update_shims
+  
+  # 显示安装后信息
+  show_post_install_info "$version"
+}
+
+# 错误处理
+trap 'podsenv_log "error" "Installation interrupted"' INT TERM
+
+# 执行主函数
+main "$@"

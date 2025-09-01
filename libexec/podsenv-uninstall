@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# Podsenv Uninstall Command
+# 卸载指定的 CocoaPods 版本
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 选项
+FORCE=false
+VERBOSE=false
+ALL=false
+
+# 解析命令行参数
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -f|--force)
+        FORCE=true
+        shift
+        ;;
+      -v|--verbose)
+        VERBOSE=true
+        shift
+        ;;
+      --all)
+        ALL=true
+        shift
+        ;;
+      -h|--help)
+        exec "${PODSENV_ROOT}/bin/podsenv" help uninstall
+        ;;
+      -*)
+        podsenv_error "Unknown option: $1"
+        ;;
+      *)
+        # 版本参数
+        VERSIONS+=("$1")
+        shift
+        ;;
+    esac
+  done
+  
+  # 检查参数
+  if [ "$ALL" = "true" ] && [ ${#VERSIONS[@]} -gt 0 ]; then
+    podsenv_error "Cannot specify both --all and specific versions"
+  fi
+  
+  if [ "$ALL" = "false" ] && [ ${#VERSIONS[@]} -eq 0 ]; then
+    podsenv_error "No version specified. Use --all to uninstall all versions."
+  fi
+}
+
+# 确认卸载
+confirm_uninstall() {
+  local versions=("$@")
+  local count=${#versions[@]}
+  
+  if [ "$FORCE" = "true" ]; then
+    return 0
+  fi
+  
+  echo "This will uninstall the following CocoaPods version(s):"
+  printf '  %s\n' "${versions[@]}"
+  echo
+  
+  if [ $count -eq 1 ]; then
+    echo "This action cannot be undone."
+  else
+    echo "This action cannot be undone. All $count versions will be removed."
+  fi
+  
+  echo
+  read -p "Are you sure? (y/N) " -r
+  
+  case "$REPLY" in
+    [Yy]|[Yy][Ee][Ss])
+      return 0
+      ;;
+    *)
+      echo "Uninstall cancelled."
+      exit 0
+      ;;
+  esac
+}
+
+# 检查版本是否正在使用
+check_version_in_use() {
+  local version="$1"
+  local warnings=()
+  
+  # 检查全局版本
+  local global_version
+  global_version="$(podsenv_get_global_version 2>/dev/null || echo "")"
+  
+  if [ "$global_version" = "$version" ]; then
+    warnings+=("This is the current global version")
+  fi
+  
+  # 检查当前 shell 版本
+  if [ "${PODSENV_VERSION:-}" = "$version" ]; then
+    warnings+=("This is the current shell version")
+  fi
+  
+  # 检查本地版本文件
+  local local_files
+  local_files="$(find . -name ".podsenv-version" -exec grep -l "^${version}$" {} \; 2>/dev/null || true)"
+  
+  if [ -n "$local_files" ]; then
+    local file_count
+    file_count="$(echo "$local_files" | wc -l | xargs)"
+    warnings+=("Used in $file_count local .podsenv-version file(s)")
+  fi
+  
+  if [ ${#warnings[@]} -gt 0 ]; then
+    podsenv_log "warn" "Version $version is currently in use:"
+    printf '  - %s\n' "${warnings[@]}"
+    echo
+  fi
+}
+
+# 卸载单个版本
+uninstall_version() {
+  local version="$1"
+  local resolved_version
+  local version_dir
+  
+  podsenv_log "info" "Uninstalling CocoaPods $version..."
+  
+  # 验证版本格式
+  if ! podsenv_version_valid "$version"; then
+    podsenv_error "Invalid version format: $version"
+  fi
+  
+  # 不能卸载系统版本
+  if [ "$version" = "system" ]; then
+    podsenv_error "Cannot uninstall system version"
+  fi
+  
+  # 解析别名
+  resolved_version="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+  
+  # 检查版本是否已安装
+  if ! podsenv_version_installed "$resolved_version"; then
+    podsenv_log "warn" "CocoaPods $version is not installed"
+    return 0
+  fi
+  
+  # 检查版本是否正在使用
+  check_version_in_use "$version"
+  
+  # 获取版本目录
+  version_dir="$(podsenv_version_dir "$resolved_version")"
+  
+  if [ ! -d "$version_dir" ]; then
+    podsenv_log "warn" "Version directory not found: $version_dir"
+    return 0
+  fi
+  
+  # 显示卸载信息
+  if [ "$VERBOSE" = "true" ]; then
+    echo "Version directory: $version_dir"
+    
+    local dir_size
+    dir_size="$(du -sh "$version_dir" 2>/dev/null | cut -f1 || echo "unknown")"
+    echo "Directory size: $dir_size"
+    echo
+  fi
+  
+  # 删除版本目录
+  if rm -rf "$version_dir"; then
+    podsenv_log "success" "Uninstalled CocoaPods $version"
+    
+    if [ "$version" != "$resolved_version" ]; then
+      echo "(resolved from alias: $resolved_version)"
+    fi
+  else
+    podsenv_error "Failed to remove version directory: $version_dir"
+  fi
+  
+  # 清理缓存
+  local cache_file="${PODSENV_CACHE_DIR}/versions.cache"
+  if [ -f "$cache_file" ]; then
+    rm -f "$cache_file"
+    podsenv_log "debug" "Cleared version cache"
+  fi
+}
+
+# 获取要卸载的版本列表
+get_versions_to_uninstall() {
+  if [ "$ALL" = "true" ]; then
+    # 卸载所有版本
+    local installed_versions
+    installed_versions="$(podsenv_installed_versions)"
+    
+    if [ -z "$installed_versions" ]; then
+      podsenv_log "warn" "No CocoaPods versions installed"
+      exit 0
+    fi
+    
+    echo "$installed_versions"
+  else
+    # 卸载指定版本
+    printf '%s\n' "${VERSIONS[@]}"
+  fi
+}
+
+# 显示卸载摘要
+show_uninstall_summary() {
+  local uninstalled_versions=("$@")
+  local count=${#uninstalled_versions[@]}
+  
+  if [ $count -eq 0 ]; then
+    return
+  fi
+  
+  echo
+  echo "Uninstall summary:"
+  echo "  Removed $count version(s):"
+  printf '    %s\n' "${uninstalled_versions[@]}"
+  
+  # 显示剩余版本
+  local remaining_versions
+  remaining_versions="$(podsenv_installed_versions)"
+  
+  if [ -n "$remaining_versions" ]; then
+    local remaining_count
+    remaining_count="$(echo "$remaining_versions" | wc -l | xargs)"
+    echo "  Remaining $remaining_count version(s):"
+    echo "$remaining_versions" | sed 's/^/    /'
+  else
+    echo "  No versions remaining"
+  fi
+  
+  echo
+  echo "Run 'podsenv rehash' to update shims"
+}
+
+# 清理相关配置
+cleanup_after_uninstall() {
+  local uninstalled_versions=("$@")
+  
+  # 检查全局版本是否被卸载
+  local global_version
+  global_version="$(podsenv_get_global_version 2>/dev/null || echo "")"
+  
+  if [ -n "$global_version" ]; then
+    local global_resolved
+    global_resolved="$(podsenv_resolve_alias "$global_version" 2>/dev/null || echo "$global_version")"
+    
+    for version in "${uninstalled_versions[@]}"; do
+      local version_resolved
+      version_resolved="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+      
+      if [ "$global_resolved" = "$version_resolved" ]; then
+        podsenv_log "warn" "Global version $global_version was uninstalled"
+        echo "Run 'podsenv global <version>' to set a new global version"
+        break
+      fi
+    done
+  fi
+  
+  # 检查当前 shell 版本是否被卸载
+  if [ -n "${PODSENV_VERSION:-}" ]; then
+    local shell_resolved
+    shell_resolved="$(podsenv_resolve_alias "$PODSENV_VERSION" 2>/dev/null || echo "$PODSENV_VERSION")"
+    
+    for version in "${uninstalled_versions[@]}"; do
+      local version_resolved
+      version_resolved="$(podsenv_resolve_alias "$version" 2>/dev/null || echo "$version")"
+      
+      if [ "$shell_resolved" = "$version_resolved" ]; then
+        podsenv_log "warn" "Shell version $PODSENV_VERSION was uninstalled"
+        echo "Run 'podsenv shell --unset' to clear the shell version"
+        break
+      fi
+    done
+  fi
+}
+
+# 主函数
+main() {
+  local VERSIONS=()
+  local uninstalled_versions=()
+  
+  # 解析参数
+  parse_args "$@"
+  
+  # 获取要卸载的版本列表
+  local versions_to_uninstall
+  versions_to_uninstall="$(get_versions_to_uninstall)"
+  
+  if [ -z "$versions_to_uninstall" ]; then
+    podsenv_log "info" "No versions to uninstall"
+    exit 0
+  fi
+  
+  # 转换为数组
+  local versions_array=()
+  while IFS= read -r version; do
+    if [ -n "$version" ]; then
+      versions_array+=("$version")
+    fi
+  done <<< "$versions_to_uninstall"
+  
+  # 确认卸载
+  confirm_uninstall "${versions_array[@]}"
+  
+  # 卸载每个版本
+  for version in "${versions_array[@]}"; do
+    if uninstall_version "$version"; then
+      uninstalled_versions+=("$version")
+    fi
+  done
+  
+  # 显示卸载摘要
+  show_uninstall_summary "${uninstalled_versions[@]}"
+  
+  # 清理相关配置
+  cleanup_after_uninstall "${uninstalled_versions[@]}"
+  
+  # 重建 shims
+  if [ ${#uninstalled_versions[@]} -gt 0 ]; then
+    podsenv_log "info" "Rebuilding shims..."
+    "${PODSENV_ROOT}/libexec/podsenv-rehash" ${VERBOSE:+--verbose} || true
+  fi
+}
+
+# 执行主函数
+main "$@"

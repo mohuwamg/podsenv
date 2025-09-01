@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Podsenv Global Command
+# 设置或显示全局 CocoaPods 版本
+
+set -euo pipefail
+
+# 加载核心库
+PODSENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../" && pwd)"
+# shellcheck source=lib/podsenv-core.sh
+source "${PODSENV_ROOT}/lib/podsenv-core.sh"
+# shellcheck source=lib/podsenv-version.sh
+source "${PODSENV_ROOT}/lib/podsenv-version.sh"
+
+# 全局版本文件路径
+GLOBAL_VERSION_FILE="${PODSENV_ROOT}/version"
+
+# 解析命令行参数
+parse_args() {
+  case "${1:-}" in
+    -h|--help)
+      exec "${PODSENV_ROOT}/bin/podsenv" help global
+      ;;
+    --unset)
+      UNSET_VERSION=true
+      ;;
+    -*)
+      podsenv_error "Unknown option: $1"
+      ;;
+    "")
+      # 没有参数，显示当前全局版本
+      ;;
+    *)
+      VERSION="$1"
+      ;;
+  esac
+}
+
+# 显示当前全局版本
+show_global_version() {
+  if [ -f "$GLOBAL_VERSION_FILE" ]; then
+    local version
+    version="$(podsenv_read_version_file "$GLOBAL_VERSION_FILE")"
+    
+    if [ -n "$version" ]; then
+      # 解析版本别名
+      local resolved_version
+      resolved_version="$(podsenv_resolve_version_alias "$version")"
+      
+      if [ "$version" != "$resolved_version" ]; then
+        echo "$version -> $resolved_version"
+      else
+        echo "$version"
+      fi
+    else
+      echo "No global version set"
+    fi
+  else
+    echo "No global version set"
+  fi
+}
+
+# 设置全局版本
+set_global_version() {
+  local version="$1"
+  local resolved_version
+  
+  # 解析版本别名
+  resolved_version="$(podsenv_resolve_version_alias "$version")"
+  
+  # 验证版本格式
+  if [ "$resolved_version" != "system" ] && ! podsenv_version_valid "$resolved_version"; then
+    podsenv_error "Invalid version format: $version"
+  fi
+  
+  # 检查版本是否可用
+  if ! podsenv_version_available "$resolved_version"; then
+    if [ "$resolved_version" = "system" ]; then
+      podsenv_error "System CocoaPods not found\nInstall CocoaPods system-wide or use 'podsenv install <version>'"
+    else
+      podsenv_error "CocoaPods $resolved_version is not installed\nRun 'podsenv install $resolved_version' to install it"
+    fi
+  fi
+  
+  # 写入全局版本文件
+  echo "$version" > "$GLOBAL_VERSION_FILE"
+  
+  # 显示设置结果
+  if [ "$version" != "$resolved_version" ]; then
+    podsenv_log "success" "Global version set to $version -> $resolved_version"
+  else
+    podsenv_log "success" "Global version set to $version"
+  fi
+  
+  # 提示用户可能需要重新启动 shell
+  echo
+  echo "Note: You may need to restart your shell or run 'hash -r' to see the changes."
+}
+
+# 取消设置全局版本
+unset_global_version() {
+  if [ -f "$GLOBAL_VERSION_FILE" ]; then
+    rm "$GLOBAL_VERSION_FILE"
+    podsenv_log "success" "Global version unset"
+  else
+    podsenv_log "info" "No global version was set"
+  fi
+}
+
+# 验证全局版本设置
+validate_global_version() {
+  if [ ! -f "$GLOBAL_VERSION_FILE" ]; then
+    return
+  fi
+  
+  local version
+  local resolved_version
+  
+  version="$(podsenv_read_version_file "$GLOBAL_VERSION_FILE")"
+  
+  if [ -z "$version" ]; then
+    podsenv_log "warn" "Global version file is empty"
+    return
+  fi
+  
+  resolved_version="$(podsenv_resolve_version_alias "$version")"
+  
+  if ! podsenv_version_available "$resolved_version"; then
+    podsenv_log "warn" "Global version $version ($resolved_version) is not available"
+    echo "Run 'podsenv install $resolved_version' to install it"
+  fi
+}
+
+# 显示全局版本信息
+show_global_info() {
+  echo "Global version configuration:"
+  echo "  File: $GLOBAL_VERSION_FILE"
+  
+  if [ -f "$GLOBAL_VERSION_FILE" ]; then
+    local version
+    version="$(podsenv_read_version_file "$GLOBAL_VERSION_FILE")"
+    echo "  Version: ${version:-"(empty)"}"
+    
+    if [ -n "$version" ]; then
+      local resolved_version
+      resolved_version="$(podsenv_resolve_version_alias "$version")"
+      
+      if [ "$version" != "$resolved_version" ]; then
+        echo "  Resolved: $resolved_version"
+      fi
+      
+      if podsenv_version_available "$resolved_version"; then
+        echo "  Status: Available"
+        
+        if [ "$resolved_version" != "system" ]; then
+          local version_path
+          version_path="$(podsenv_version_path "$resolved_version")"
+          echo "  Path: $version_path"
+        fi
+      else
+        echo "  Status: Not available"
+      fi
+    fi
+  else
+    echo "  Status: Not set"
+  fi
+  
+  echo
+  
+  # 显示当前生效的版本
+  local current_version
+  local version_source
+  
+  current_version="$(podsenv_detect_version 2>/dev/null || echo "none")"
+  version_source="$(podsenv_get_version_source "$current_version" 2>/dev/null || echo "none")"
+  
+  echo "Current effective version: $current_version"
+  echo "Version source: $version_source"
+}
+
+# 主函数
+main() {
+  local version="${1:-}"
+  local unset_version=false
+  
+  # 解析参数
+  if [ "$#" -gt 0 ]; then
+    parse_args "$@"
+  fi
+  
+  # 根据参数执行相应操作
+  if [ "${UNSET_VERSION:-false}" = "true" ]; then
+    unset_global_version
+  elif [ -n "${VERSION:-}" ]; then
+    set_global_version "$VERSION"
+  else
+    # 显示当前全局版本
+    show_global_version
+    
+    # 验证版本可用性
+    validate_global_version
+  fi
+}
+
+# 执行主函数
+main "$@"
