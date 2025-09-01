@@ -23,7 +23,7 @@ podsenv 是一个现代化的 CocoaPods 版本管理工具，灵感来源于 `py
 ### 自动安装（推荐）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-repo/podsenv/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mohuwamg/podsenv/main/install.sh | bash
 ```
 
 ### 手动安装
