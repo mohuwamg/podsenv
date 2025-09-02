@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-# 版本信息
-PODSENV_VERSION="2.0.0"
+# 工具版本信息
+PODSENV_TOOL_VERSION="2.0.0"
 
 # 核心目录定义
 if [ -z "${PODSENV_ROOT:-}" ]; then
@@ -235,18 +235,20 @@ trap podsenv_cleanup EXIT INT TERM
 # 加载其他库
 source "${PODSENV_ROOT}/lib/podsenv-error.sh"
 
-# 导出核心函数
-export -f podsenv_log
-export -f podsenv_error
-export -f podsenv_ensure_dir
-export -f podsenv_command_exists
-export -f podsenv_version_valid
-export -f podsenv_version_compare
-export -f podsenv_version_dir
-export -f podsenv_gem_home
-export -f podsenv_gem_bin_dir
-export -f podsenv_version_installed
-export -f podsenv_installed_versions
-export -f podsenv_init
-export -f podsenv_load_config
-export -f podsenv_progress
+# 导出核心函数（静默执行）
+{
+  export -f podsenv_log
+  export -f podsenv_error
+  export -f podsenv_ensure_dir
+  export -f podsenv_command_exists
+  export -f podsenv_version_valid
+  export -f podsenv_version_compare
+  export -f podsenv_version_dir
+  export -f podsenv_gem_home
+  export -f podsenv_gem_bin_dir
+  export -f podsenv_version_installed
+  export -f podsenv_installed_versions
+  export -f podsenv_init
+  export -f podsenv_load_config
+  export -f podsenv_progress
+} >/dev/null 2>&1

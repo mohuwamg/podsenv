@@ -14,9 +14,13 @@ mkdir -p "$PODSENV_ROOT/shims"
 mkdir -p "$BIN_DIR"
 mkdir -p "$PODSENV_ROOT/default_gem_home"
 
-# Copy the podsenv script
-cp ./podsenv "$BIN_DIR/podsenv"
+# Copy the podsenv script and supporting files
+cp ./bin/podsenv "$BIN_DIR/podsenv"
 chmod +x "$BIN_DIR/podsenv"
+
+# Copy lib and libexec directories
+cp -r ./lib "$PODSENV_ROOT/"
+cp -r ./libexec "$PODSENV_ROOT/"
 
 echo "podsenv installed to $BIN_DIR"
 

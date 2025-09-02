@@ -381,20 +381,22 @@ podsenv_version_exists() {
   [ -d "${PODSENV_ROOT}/versions/$version" ]
 }
 
-# 导出函数
-export -f podsenv_find_version_file
-export -f podsenv_read_version_file
-export -f podsenv_resolve_version_alias
-export -f podsenv_get_latest_version
-export -f podsenv_get_stable_version
-export -f podsenv_get_lts_version
-export -f podsenv_detect_version
-export -f podsenv_get_version_source
-export -f podsenv_version_available
-export -f podsenv_version_path
-export -f podsenv_set_version_env
-export -f podsenv_available_versions
-export -f podsenv_version_prefix_match
-export -f podsenv_version_info
-export -f podsenv_auto_switch
-export -f podsenv_version_exists
+# 导出函数（静默执行）
+{
+  export -f podsenv_find_version_file
+  export -f podsenv_read_version_file
+  export -f podsenv_resolve_version_alias
+  export -f podsenv_get_latest_version
+  export -f podsenv_get_stable_version
+  export -f podsenv_get_lts_version
+  export -f podsenv_detect_version
+  export -f podsenv_get_version_source
+  export -f podsenv_version_available
+  export -f podsenv_version_path
+  export -f podsenv_set_version_env
+  export -f podsenv_available_versions
+  export -f podsenv_version_prefix_match
+  export -f podsenv_version_info
+  export -f podsenv_auto_switch
+  export -f podsenv_version_exists
+} >/dev/null 2>&1

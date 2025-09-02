@@ -264,7 +264,7 @@ show_available_commands() {
     bin_dir="$(podsenv_gem_bin_dir "$version")"
     
     if [ -d "$bin_dir" ]; then
-      find "$bin_dir" -type f -executable -exec basename {} \; 2>/dev/null | sort | sed 's/^/  /' >&2 || true
+      find "$bin_dir" -type f -perm +111 -exec basename {} \; 2>/dev/null | sort | sed 's/^/  /' >&2 || true
     else
       echo "  (no commands found)" >&2
     fi

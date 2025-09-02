@@ -166,7 +166,7 @@ EOF
       ;;
     *)
       cat << EOF
-Podsenv ${PODSENV_VERSION} - CocoaPods Version Manager
+Podsenv ${PODSENV_TOOL_VERSION} - CocoaPods Version Manager
 
 Usage: podsenv <command> [args...]
 
@@ -260,7 +260,7 @@ podsenv_main() {
       exec "${PODSENV_ROOT}/libexec/podsenv-plugin" "$@"
       ;;
     "version" | "--version" | "-v")
-      echo "podsenv ${PODSENV_VERSION}"
+      echo "podsenv ${PODSENV_TOOL_VERSION}"
       ;;
     "help" | "--help" | "-h")
       shift

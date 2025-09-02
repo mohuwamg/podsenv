@@ -4,7 +4,7 @@
 
 # 防止重复加载
 if [ -n "${PODSENV_ERROR_LOADED:-}" ]; then
-  return 0
+  return 0 2>/dev/null || exit 0
 fi
 export PODSENV_ERROR_LOADED=1
 
@@ -262,21 +262,23 @@ podsenv_setup_error_trap() {
   trap 'podsenv_handle_unexpected_error $? "${BASH_COMMAND}" "${LINENO}"' ERR
 }
 
-# 导出函数
-export -f podsenv_error
-export -f podsenv_warn
-export -f podsenv_info
-export -f podsenv_success
-export -f podsenv_debug
-export -f podsenv_error_version_not_found
-export -f podsenv_error_version_not_installed
-export -f podsenv_error_installation_failed
-export -f podsenv_error_network
-export -f podsenv_error_permission
-export -f podsenv_error_missing_dependency
-export -f podsenv_error_config
-export -f podsenv_error_usage
-export -f podsenv_error_system
-export -f podsenv_suggest_recovery
-export -f podsenv_handle_unexpected_error
-export -f podsenv_setup_error_trap
+# 导出函数（静默执行）
+{
+  export -f podsenv_error
+  export -f podsenv_warn
+  export -f podsenv_info
+  export -f podsenv_success
+  export -f podsenv_debug
+  export -f podsenv_error_version_not_found
+  export -f podsenv_error_version_not_installed
+  export -f podsenv_error_installation_failed
+  export -f podsenv_error_network
+  export -f podsenv_error_permission
+  export -f podsenv_error_missing_dependency
+  export -f podsenv_error_config
+  export -f podsenv_error_usage
+  export -f podsenv_error_system
+  export -f podsenv_suggest_recovery
+  export -f podsenv_handle_unexpected_error
+  export -f podsenv_setup_error_trap
+} >/dev/null 2>&1

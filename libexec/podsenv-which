@@ -211,7 +211,7 @@ show_all_command_paths() {
           
           if [ -d "$bin_dir" ]; then
             echo "  $version:"
-            find "$bin_dir" -type f -executable -exec basename {} \; 2>/dev/null | sort | sed 's/^/    /' || true
+            find "$bin_dir" -type f -perm +111 -exec basename {} \; 2>/dev/null | sort | sed 's/^/    /' || true
           fi
         fi
       done <<< "$versions"

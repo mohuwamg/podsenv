@@ -146,15 +146,15 @@ discover_commands() {
         esac
         
         # 添加到命令列表
-        if [[ ! " ${commands[*]} " =~ " ${command} " ]]; then
+        if [ ${#commands[@]} -eq 0 ] || [[ ! " ${commands[*]:-} " =~ " ${command} " ]]; then
           commands+=("$command")
         fi
-      done < <(find "$bin_dir" -type f -executable -print0 2>/dev/null || true)
+      done < <(find "$bin_dir" -type f -perm +111 -print0 2>/dev/null || true)
     fi
   done <<< "$versions"
   
   # 确保 pod 命令存在
-  if [[ ! " ${commands[*]} " =~ " pod " ]]; then
+  if [ ${#commands[@]} -eq 0 ] || [[ ! " ${commands[*]:-} " =~ " pod " ]]; then
     commands+=("pod")
   fi
   
@@ -211,7 +211,7 @@ validate_shims() {
   fi
   
   shim_count=$(find "$PODSENV_SHIMS_DIR" -type f | wc -l | xargs)
-  executable_count=$(find "$PODSENV_SHIMS_DIR" -type f -executable | wc -l | xargs)
+  executable_count=$(find "$PODSENV_SHIMS_DIR" -type f -perm +111 | wc -l | xargs)
   
   if [ "$shim_count" -eq 0 ]; then
     podsenv_log "warn" "No shims found"
@@ -240,7 +240,7 @@ show_rehash_info() {
     
     if [ "$shim_count" -gt 0 ]; then
       echo "Available commands:"
-      find "$PODSENV_SHIMS_DIR" -type f -executable -exec basename {} \; | sort | sed 's/^/  /'
+      find "$PODSENV_SHIMS_DIR" -type f -perm +111 -exec basename {} \; | sort | sed 's/^/  /'
     fi
   fi
   
